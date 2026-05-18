@@ -1,0 +1,16 @@
+node_modules/
+dist/
+!plugins/azure-devops/dist/
+plugins/azure-devops/dist/*
+!plugins/azure-devops/dist/index.bundle.js
+coverage/
+*.tsbuildinfo
+.DS_Store
+.claude/
+.gitnexus/
+.env
+.env.*
+!.env.example
+local.config.json
+plugins/azure-devops/.mcp.hosted.json
+*.log

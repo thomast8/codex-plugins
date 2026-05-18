@@ -1,0 +1,46 @@
+{
+  "name": "azure-devops-codex-plugin",
+  "version": "0.1.0",
+  "description": "Codex plugin MCP server for Azure DevOps Boards and Repos.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thomast8/codex-plugins.git",
+    "directory": "plugins/azure-devops"
+  },
+  "bugs": {
+    "url": "https://github.com/thomast8/codex-plugins/issues"
+  },
+  "homepage": "https://github.com/thomast8/codex-plugins#readme",
+  "bin": {
+    "azure-devops-codex-plugin": "./dist/index.bundle.js",
+    "azure-devops-codex-plugin-remote": "./dist/remote.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && esbuild dist/index.js --bundle --platform=node --format=esm --outfile=dist/index.bundle.js",
+    "lint": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "smoke": "node dist/smoke.js",
+    "serve": "node dist/remote.js"
+  },
+  "dependencies": {
+    "@cfworker/json-schema": "^4.1.1",
+    "@modelcontextprotocol/client": "^2.0.0-alpha.2",
+    "@modelcontextprotocol/server": "^2.0.0-alpha.2",
+    "express": "^5.2.1",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.8"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

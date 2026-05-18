@@ -1,0 +1,44 @@
+{
+  "name": "azure-devops",
+  "version": "0.1.0",
+  "description": "Azure DevOps Boards and Repos integration for Codex with hosted Microsoft Entra OAuth.",
+  "author": {
+    "name": "Thomas Tiotto",
+    "url": "https://github.com/thomast8"
+  },
+  "homepage": "https://github.com/thomast8/codex-plugins#readme",
+  "repository": "https://github.com/thomast8/codex-plugins",
+  "license": "MIT",
+  "keywords": [
+    "azure-devops",
+    "boards",
+    "repos",
+    "mcp",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Azure DevOps",
+    "shortDescription": "Use Azure Boards and Azure Repos from Codex.",
+    "longDescription": "Connect Codex to Azure Boards and Azure Repos through a hosted MCP service with Microsoft Entra OAuth, a polished settings page for organization/project defaults, repository allowlisting, live connection testing, and preview-first work item writes that require explicit apply.",
+    "developerName": "Thomas Tiotto",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/thomast8/codex-plugins",
+    "privacyPolicyURL": "https://github.com/thomast8/codex-plugins/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/thomast8/codex-plugins/blob/main/LICENSE",
+    "defaultPrompt": [
+      "Open Azure DevOps settings.",
+      "Check Azure DevOps connection status.",
+      "Find related work items and pull requests."
+    ],
+    "brandColor": "#0078D4",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg"
+  }
+}

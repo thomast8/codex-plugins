@@ -1,0 +1,28 @@
+{
+  "name": "codex-plugins",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thomast8/codex-plugins.git"
+  },
+  "bugs": {
+    "url": "https://github.com/thomast8/codex-plugins/issues"
+  },
+  "homepage": "https://github.com/thomast8/codex-plugins#readme",
+  "workspaces": [
+    "plugins/azure-devops"
+  ],
+  "scripts": {
+    "build": "npm --workspace azure-devops-codex-plugin run build",
+    "lint": "npm --workspace azure-devops-codex-plugin run lint",
+    "test": "npm --workspace azure-devops-codex-plugin run test",
+    "smoke": "npm --workspace azure-devops-codex-plugin run smoke",
+    "generate:mcp": "node scripts/generate-mcp-manifest.mjs"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "azure-devops": {
+    "command": "node",
+    "args": [
+      "./dist/index.bundle.js"
+    ],
+    "cwd": "."
+  }
+}

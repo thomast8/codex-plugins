@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 96" role="img" aria-label="Azure DevOps Codex plugin logo">
+  <rect width="360" height="96" rx="16" fill="#0F172A"/>
+  <g transform="translate(24 16)">
+    <rect width="64" height="64" rx="14" fill="#0078D4"/>
+    <path d="M44.2 12 18.7 22.5v18.8l-8.9 2.6V20.5L44.2 6v6z" fill="#fff" opacity=".95"/>
+    <path d="M20.6 25.8 44.2 16v32.2L20.6 42V25.8z" fill="#fff" opacity=".82"/>
+    <path d="M49.8 14.8v36.6L21 58v-9.1l20.1-4.6V18.7l8.7-3.9z" fill="#fff"/>
+  </g>
+  <text x="112" y="43" fill="#F8FAFC" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="700">Azure DevOps</text>
+  <text x="112" y="67" fill="#CBD5E1" font-family="Inter, Arial, sans-serif" font-size="15">Boards and Repos for Codex</text>
+</svg>
+
