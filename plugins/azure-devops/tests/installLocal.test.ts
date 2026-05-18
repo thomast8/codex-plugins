@@ -14,6 +14,7 @@ describe("local installer", () => {
   const repoRoot = path.resolve(testDir, "..", "..", "..");
   const scriptPath = path.join(repoRoot, "scripts", "install-local.mjs");
   const pluginSource = path.join(repoRoot, "plugins", "azure-devops");
+  const githubPluginSource = path.join(repoRoot, "plugins", "github-local-ops");
 
   function createConfig(configPath: string): void {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -138,9 +139,16 @@ describe("local installer", () => {
       };
     const stdout = await runInstaller(env);
 
-    expect(stdout).toContain("Plugin: azure-devops@codex-plugins");
     expect(stdout).toContain(
-      "Disabled stale plugin entries: azure-devops@codex-azure-devops-plugin, azure-devops@thomas-codex-config"
+      "Plugins: azure-devops@codex-plugins, github-local-ops@codex-plugins"
+    );
+    expect(stdout).toContain(
+      [
+        "Disabled stale plugin entries: azure-devops@codex-azure-devops-plugin",
+        "azure-devops@thomas-codex-config",
+        "github-local-ops@codex-azure-devops-plugin",
+        "github-local-ops@thomas-codex-config",
+      ].join(", ")
     );
 
     const updatedConfig = fs.readFileSync(configPath, "utf8");
@@ -150,10 +158,19 @@ describe("local installer", () => {
       '[plugins."azure-devops@codex-plugins"]\nenabled = true'
     );
     expect(updatedConfig).toContain(
+      '[plugins."github-local-ops@codex-plugins"]\nenabled = true'
+    );
+    expect(updatedConfig).toContain(
       '[plugins."azure-devops@codex-azure-devops-plugin"]\nenabled = false'
     );
     expect(updatedConfig).toContain(
       '[plugins."azure-devops@thomas-codex-config"]\nenabled = false'
+    );
+    expect(updatedConfig).toContain(
+      '[plugins."github-local-ops@codex-azure-devops-plugin"]\nenabled = false'
+    );
+    expect(updatedConfig).toContain(
+      '[plugins."github-local-ops@thomas-codex-config"]\nenabled = false'
     );
     expect(updatedConfig).not.toContain('source = "/old/config/root"');
     expect(updatedConfig).not.toContain(
@@ -183,6 +200,11 @@ describe("local installer", () => {
     const pluginLink = path.join(configRoot, "plugins", "azure-devops");
     expect(fs.lstatSync(pluginLink).isSymbolicLink()).toBe(true);
     expect(fs.realpathSync(pluginLink)).toBe(fs.realpathSync(pluginSource));
+    const githubPluginLink = path.join(configRoot, "plugins", "github-local-ops");
+    expect(fs.lstatSync(githubPluginLink).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(githubPluginLink)).toBe(
+      fs.realpathSync(githubPluginSource)
+    );
 
     const marketplace = JSON.parse(
       fs.readFileSync(
@@ -205,6 +227,10 @@ describe("local installer", () => {
     expect(marketplace.plugins).toContainEqual(
       expect.objectContaining({
         name: "github-local-ops",
+        source: {
+          source: "local",
+          path: "./plugins/github-local-ops",
+        },
       })
     );
     expect(marketplace.plugins.filter((plugin) => plugin.name === "azure-devops")).toHaveLength(
@@ -227,7 +253,9 @@ describe("local installer", () => {
     const backupPath = path.join(path.dirname(configPath), firstBackup!);
     expect(fs.statSync(backupPath).mode & 0o777).toBe(0o600);
     const secondStdout = await runInstaller(env);
-    expect(secondStdout).toContain("Azure DevOps plugin is already registered in Codex.");
+    expect(secondStdout).toContain(
+      "Selected marketplace plugins are already registered in Codex."
+    );
     expect(configBackups(configPath)).toHaveLength(firstBackups.length);
     expect(fs.readFileSync(configPath, "utf8")).toBe(updatedConfig);
   });
@@ -258,6 +286,67 @@ describe("local installer", () => {
     expect(fs.readFileSync(configPath, "utf8")).toContain(
       `source = ${JSON.stringify(configRoot)}`
     );
+  });
+
+  it("can install only a selected marketplace plugin", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ado-install-selected-"));
+    const configRoot = path.join(homeDir, "Codex-config");
+    const configPath = path.join(homeDir, ".Codex", "config.toml");
+    createConfig(configPath);
+    createMarketplace(configRoot);
+
+    const stdout = await runInstaller({
+      ...process.env,
+      CODEX_CONFIG_FILE: configPath,
+      CODEX_CONFIG_ROOT: configRoot,
+      CODEX_PLUGINS: "github-local-ops",
+      HOME: homeDir,
+    });
+
+    expect(stdout).toContain("Plugins: github-local-ops@codex-plugins");
+    expect(fs.existsSync(path.join(configRoot, "plugins", "azure-devops"))).toBe(false);
+    const githubPluginLink = path.join(configRoot, "plugins", "github-local-ops");
+    expect(fs.lstatSync(githubPluginLink).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(githubPluginLink)).toBe(
+      fs.realpathSync(githubPluginSource)
+    );
+
+    const updatedConfig = fs.readFileSync(configPath, "utf8");
+    expect(updatedConfig).toContain(
+      '[plugins."github-local-ops@codex-plugins"]\nenabled = true'
+    );
+    expect(updatedConfig).toContain(
+      '[plugins."azure-devops@codex-plugins"]\nenabled = false'
+    );
+  });
+
+  it("rejects invalid selected plugin names before linking", async () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ado-install-invalid-"));
+    const configRoot = path.join(homeDir, "Codex-config");
+    const configPath = path.join(homeDir, ".Codex", "config.toml");
+    createConfig(configPath);
+
+    await expect(
+      execFile(process.execPath, [scriptPath], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          CODEX_CONFIG_FILE: configPath,
+          CODEX_CONFIG_ROOT: configRoot,
+          CODEX_PLUGINS: "../bad",
+          HOME: homeDir,
+        },
+      })
+    ).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("Invalid plugin name"),
+    });
+
+    expect(fs.existsSync(path.join(configRoot, "plugins"))).toBe(false);
+    expect(
+      fs.existsSync(path.join(configRoot, ".agents", "plugins", "marketplace.json"))
+    ).toBe(false);
   });
 
   it.each([

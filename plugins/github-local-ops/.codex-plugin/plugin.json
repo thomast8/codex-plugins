@@ -1,0 +1,48 @@
+{
+  "name": "github-local-ops",
+  "version": "0.1.0",
+  "description": "Local GitHub workflows for repos, PRs, issues, Actions, releases, and publishing, backed by gh and git.",
+  "author": {
+    "name": "Thomas Tiotto",
+    "url": "https://github.com/thomast8"
+  },
+  "homepage": "https://github.com/thomast8/codex-plugins#readme",
+  "repository": "https://github.com/thomast8/codex-plugins",
+  "license": "MIT",
+  "keywords": [
+    "github",
+    "git",
+    "pull-requests",
+    "issues",
+    "actions",
+    "ci",
+    "releases",
+    "publishing"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "GitHub Local Ops",
+    "shortDescription": "GitHub workflows backed by gh and git",
+    "longDescription": "Use local GitHub CLI authentication to inspect repositories, triage pull requests, debug Actions checks, handle review feedback, manage issues and releases, and prepare code changes for review. Includes readiness checks and preview-first public writes with explicit approval before execution.",
+    "developerName": "Thomas Tiotto",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/thomast8/codex-plugins/tree/main/plugins/github-local-ops",
+    "privacyPolicyURL": "https://github.com/thomast8/codex-plugins/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/thomast8/codex-plugins/blob/main/LICENSE",
+    "defaultPrompt": [
+      "Inspect this PR and its checks",
+      "Debug failing GitHub Actions",
+      "Prepare a draft PR"
+    ],
+    "brandColor": "#24292F",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/logo.svg",
+    "screenshots": []
+  }
+}

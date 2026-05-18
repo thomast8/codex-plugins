@@ -1,0 +1,83 @@
+---
+name: github
+description: Inspect GitHub repositories, pull requests, issues, Actions, releases, and publishing workflows through the local GitHub CLI backed GitHub Local Ops plugin. Use when the user asks for GitHub work and the hosted GitHub connector is unavailable or not needed.
+---
+
+# GitHub Local Ops
+
+Use this umbrella skill for GitHub work backed by local `gh` and `git` access.
+
+This plugin does not bypass an admin-disabled hosted connector. It uses the user's existing local GitHub CLI authentication, repo permissions, and the GitHub API surfaces available through `gh`.
+
+## Setup
+
+- `github_setup_status`: check whether local `git`, `gh`, authentication, and repository resolution are ready.
+- Call `github_setup_status` first when setup, account, repository, or plugin readiness is unclear. Pass the user checkout `cwd` for repo-local work, or pass `repo` when operating only on a named GitHub repository.
+- Prefer the existing GitHub CLI login and macOS keychain state. If auth is missing, guide the user through `gh auth status`, `gh auth login`, or `gh auth switch`; never ask the user to paste tokens into chat or commit credentials to repo files.
+- Do not create or edit `.env` files for GitHub auth. Use the existing `gh` account state, repo permissions, and command-scoped environment only when a user deliberately provides it outside chat.
+
+## Routing
+
+| Workflow | Skill |
+| --- | --- |
+| Pull request metadata, base/head scope, diffs, review state | [../github-pr-triage/SKILL.md](../github-pr-triage/SKILL.md) |
+| Review comments, reviewer replies, readback, reviewer handoff | [../github-review-follow-up/SKILL.md](../github-review-follow-up/SKILL.md) |
+| Actions checks, failed runs, reruns, logs | [../github-ci-debug/SKILL.md](../github-ci-debug/SKILL.md) |
+| Commit, push, draft PR creation, PR body preparation | [../github-publish-changes/SKILL.md](../github-publish-changes/SKILL.md) |
+| Issues, labels, releases, workflow dispatch | [../github-issues-releases/SKILL.md](../github-issues-releases/SKILL.md) |
+
+## Default Workflow
+
+1. Start with `github_setup_status` when readiness is uncertain; otherwise start with `github_current_context` unless the user gives an explicit `OWNER/REPO`.
+2. Pass `cwd` explicitly for checkout-aware tools. Use `autoFetch: true` only when the workflow requires fresh local refs; otherwise keep the default no-fetch behavior.
+3. Prefer read tools before shelling out manually. Read tools return an `abstract` summary and, for local checkout operations, `freshness` evidence showing whether auto-fetch ran, what remotes were fetched, and any warnings.
+   - `github_setup_status`
+   - `github_repo_view`
+   - `github_pr_list`
+   - `github_pr_view`
+   - `github_pr_diff`
+   - `github_pr_review_threads`
+   - `github_checks`
+   - `github_actions_runs`
+   - `github_issue_list`
+   - `github_issue_view`
+   - `github_release_list`
+   - `github_search`
+3. For public writes, call `github_mutation_preview` and show the exact public action. `github_mutation_execute` is disabled unless the MCP process was started with `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`; only execute after explicit user approval.
+4. If a GitHub API command fails because authentication is on the wrong account, inspect `gh auth status` and switch accounts only when the user asks or local repo policy requires it.
+
+## Safe Workflow
+
+- PR-led: inspect the PR, actual base/head refs, diff, checks, and review threads before proposing comments or edits.
+- Issue-led: inspect issue body, comments, labels, and related PRs before proposing comments or label changes.
+- CI-led: inspect PR checks and workflow runs before proposing reruns or workflow dispatch.
+- Release-led: inspect existing releases and tag state before proposing release creation.
+
+For all public writes:
+
+- Call `github_mutation_preview` first and show the operation, target repo/object, public body or fields, command/API call, risk notes, and token expiry context.
+- Only call `github_mutation_execute` after the user explicitly approves the exact preview, and only when the local MCP process has public writes enabled outside chat.
+- If the preview expires or changes, generate a new preview instead of reusing a stale token.
+
+## Write Safety
+
+- Preview before public writes: PR comments, review-thread replies, PR edits, reviewer requests, issue comments, label changes, workflow dispatch, workflow reruns, and release creation.
+- Keep public replies short, casual, and specific.
+- Never resolve reviewer-authored review threads; leave resolution to reviewers or maintainers.
+- Do not cite commit SHAs in public replies.
+- For PR review comments, show each original comment with the proposed reply before posting.
+
+## Tool Notes
+
+- `github_setup_status`: readiness, auth, and repo-resolution check.
+- `github_current_context`: current checkout, branch, remote, auth text, and resolved repo.
+- `github_repo_view`, `github_pr_list`, `github_pr_view`, `github_issue_list`, `github_issue_view`, `github_release_list`, `github_search`: read metadata through `gh`; use `abstract` for the quick state and full payloads for evidence.
+- `github_pr_diff`: read PR diff or changed-file list with truncation controls.
+- `github_pr_review_threads`: fetch inline review-thread IDs and comments through GraphQL.
+- `github_checks`, `github_actions_runs`: inspect PR checks and workflow runs.
+- `github_mutation_preview`, `github_mutation_execute`: preview-first write flow with short-lived approval tokens. Execute is off by default and requires `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true` in the MCP process environment.
+- Local checkout reads do not fetch by default. Pass `autoFetch: true` only after the workflow needs fresh refs; surface `freshness` warnings and fall back to explicit `git fetch --all` when repo policy requires it.
+
+## Output
+
+Lead with the current state and the next action. Include concrete command output or URLs when they are the evidence for a recommendation.

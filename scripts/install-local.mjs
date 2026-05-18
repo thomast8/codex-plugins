@@ -27,13 +27,12 @@ const staleMarketplaceNames = (
   .split(",")
   .map((name) => name.trim())
   .filter((name) => name !== "" && name !== marketplaceName);
-const pluginName = "azure-devops";
-const pluginKey = `${pluginName}@${marketplaceName}`;
-const stalePluginKeys = [...new Set(staleMarketplaceNames)].map(
-  (name) => `${pluginName}@${name}`
-);
-const pluginSource = path.join(repoRoot, "plugins", pluginName);
-const pluginLink = path.join(configRoot, "plugins", pluginName);
+const selectedPluginNames = (
+  process.env.CODEX_PLUGINS ?? process.env.CODEX_PLUGIN_NAME ?? ""
+)
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name !== "");
 const marketplacePath = path.join(configRoot, ".agents", "plugins", "marketplace.json");
 const repoMarketplacePath = path.join(repoRoot, ".agents", "plugins", "marketplace.json");
 
@@ -91,7 +90,67 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
-function repoMarketplaceEntry() {
+function assertPluginName(pluginName) {
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(pluginName)) {
+    throw new Error(
+      `Invalid plugin name ${JSON.stringify(pluginName)}. Use lowercase letters, numbers, dots, underscores, or hyphens.`
+    );
+  }
+  return pluginName;
+}
+
+function pathInside(basePath, childPath) {
+  const relative = path.relative(basePath, childPath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function resolveInside(basePath, pluginName, label) {
+  const resolved = path.resolve(basePath, assertPluginName(pluginName));
+  if (!pathInside(basePath, resolved)) {
+    throw new Error(`${label} for ${pluginName} must stay inside ${basePath}`);
+  }
+  return resolved;
+}
+
+function repoMarketplace() {
+  return readJson(repoMarketplacePath);
+}
+
+function availablePluginNames() {
+  return (repoMarketplace().plugins ?? []).map((plugin) => plugin.name);
+}
+
+function pluginsToInstall() {
+  const names = [
+    ...new Set(selectedPluginNames.length > 0
+      ? selectedPluginNames
+      : availablePluginNames()),
+  ].map(assertPluginName);
+  if (names.length === 0) {
+    throw new Error(`${repoMarketplacePath} does not list any plugins.`);
+  }
+  return names;
+}
+
+function pluginKey(pluginName) {
+  return `${pluginName}@${marketplaceName}`;
+}
+
+function stalePluginKeys(pluginName) {
+  return [...new Set(staleMarketplaceNames)].map(
+    (name) => `${pluginName}@${name}`
+  );
+}
+
+function pluginSource(pluginName) {
+  return resolveInside(path.join(repoRoot, "plugins"), pluginName, "Plugin source");
+}
+
+function pluginLink(pluginName) {
+  return resolveInside(path.join(configRoot, "plugins"), pluginName, "Plugin link");
+}
+
+function repoMarketplaceEntry(pluginName) {
   const marketplace = readJson(repoMarketplacePath);
   const entry = marketplace.plugins?.find((plugin) => plugin.name === pluginName);
   if (entry === undefined) {
@@ -109,23 +168,33 @@ function writeJsonIfChanged(filePath, value) {
   return true;
 }
 
-function ensurePluginLink() {
-  fs.mkdirSync(path.dirname(pluginLink), { recursive: true });
+function inspectPluginLink(pluginName) {
+  const source = pluginSource(pluginName);
+  const link = pluginLink(pluginName);
 
-  if (!fs.existsSync(pluginLink)) {
-    fs.symlinkSync(pluginSource, pluginLink, "dir");
+  if (!fs.existsSync(link)) {
     return "created";
   }
 
-  const stat = fs.lstatSync(pluginLink);
-  if (stat.isSymbolicLink() && fs.realpathSync(pluginLink) === fs.realpathSync(pluginSource)) {
+  const stat = fs.lstatSync(link);
+  if (stat.isSymbolicLink() && fs.realpathSync(link) === fs.realpathSync(source)) {
     return "already-present";
   }
 
-  throw new Error(`${pluginLink} already exists and does not point to ${pluginSource}`);
+  throw new Error(`${link} already exists and does not point to ${source}`);
 }
 
-function ensureMarketplaceEntry() {
+function createPluginLink(pluginName, status) {
+  if (status !== "created") {
+    return;
+  }
+  const source = pluginSource(pluginName);
+  const link = pluginLink(pluginName);
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(source, link, "dir");
+}
+
+function ensureMarketplaceEntries(pluginNames) {
   fs.mkdirSync(path.dirname(marketplacePath), { recursive: true });
 
   const marketplace = fs.existsSync(marketplacePath)
@@ -140,30 +209,42 @@ function ensureMarketplaceEntry() {
   marketplace.interface ??= { displayName: marketplaceDisplayName };
   marketplace.plugins ??= [];
 
-  const entry = repoMarketplaceEntry();
-
-  const existing = marketplace.plugins.find((plugin) => plugin.name === pluginName);
-  if (existing) {
-    Object.assign(existing, entry);
-  } else {
-    marketplace.plugins.push(entry);
+  const statuses = [];
+  for (const pluginName of pluginNames) {
+    const entry = repoMarketplaceEntry(pluginName);
+    const existing = marketplace.plugins.find((plugin) => plugin.name === pluginName);
+    if (existing) {
+      Object.assign(existing, entry);
+    } else {
+      marketplace.plugins.push(entry);
+    }
+    statuses.push({ pluginName, status: existing ? "updated" : "added" });
   }
 
   const changed = writeJsonIfChanged(marketplacePath, marketplace);
-  if (!existing) {
-    return "added";
-  }
-  return changed ? "updated" : "already-present";
+  return statuses.map(({ pluginName, status }) => ({
+    pluginName,
+    status: changed ? status : "already-present"
+  }));
 }
 
 ensureExists(repoMarketplacePath);
-ensureExists(path.join(pluginSource, ".codex-plugin", "plugin.json"));
-ensureExists(path.join(pluginSource, ".mcp.json"));
-ensureExists(path.join(pluginSource, "dist", "index.bundle.js"));
 ensureExists(configPath);
 
-const linkStatus = ensurePluginLink();
-const marketplaceStatus = ensureMarketplaceEntry();
+const pluginNames = pluginsToInstall();
+for (const pluginName of pluginNames) {
+  ensureExists(path.join(pluginSource(pluginName), ".codex-plugin", "plugin.json"));
+  ensureExists(path.join(pluginSource(pluginName), ".mcp.json"));
+}
+
+const linkStatuses = pluginNames.map((pluginName) => ({
+  pluginName,
+  status: inspectPluginLink(pluginName)
+}));
+const marketplaceStatuses = ensureMarketplaceEntries(pluginNames);
+for (const { pluginName, status } of linkStatuses) {
+  createPluginLink(pluginName, status);
+}
 const original = fs.readFileSync(configPath, "utf8");
 let updated = original;
 
@@ -179,18 +260,25 @@ updated = upsertTomlKey(
   "source_type",
   '"local"'
 );
-updated = upsertTomlKey(updated, `plugins.${tomlString(pluginKey)}`, "enabled", "true");
-for (const stalePluginKey of stalePluginKeys) {
+for (const pluginName of pluginNames) {
   updated = upsertTomlKey(
     updated,
-    `plugins.${tomlString(stalePluginKey)}`,
+    `plugins.${tomlString(pluginKey(pluginName))}`,
     "enabled",
-    "false"
+    "true"
   );
+  for (const stalePluginKey of stalePluginKeys(pluginName)) {
+    updated = upsertTomlKey(
+      updated,
+      `plugins.${tomlString(stalePluginKey)}`,
+      "enabled",
+      "false"
+    );
+  }
 }
 
 if (updated === original) {
-  console.log("Azure DevOps plugin is already registered in Codex.");
+  console.log("Selected marketplace plugins are already registered in Codex.");
 } else {
   if (!fs.statSync(configPath).isFile()) {
     throw new Error(`${configPath} is not a regular file.`);
@@ -206,11 +294,16 @@ if (updated === original) {
 }
 
 console.log(`Config root: ${configRoot}`);
-console.log(`Plugin link: ${pluginLink} (${linkStatus})`);
-console.log(`Marketplace entry: ${marketplacePath} (${marketplaceStatus})`);
+for (const { pluginName, status } of linkStatuses) {
+  console.log(`Plugin link: ${pluginLink(pluginName)} (${status})`);
+}
+for (const { pluginName, status } of marketplaceStatuses) {
+  console.log(`Marketplace entry: ${marketplacePath} ${pluginName} (${status})`);
+}
 console.log(`Marketplace: ${marketplaceName}`);
-console.log(`Plugin: ${pluginKey}`);
-if (stalePluginKeys.length > 0) {
-  console.log(`Disabled stale plugin entries: ${stalePluginKeys.join(", ")}`);
+console.log(`Plugins: ${pluginNames.map(pluginKey).join(", ")}`);
+const disabledStaleKeys = pluginNames.flatMap(stalePluginKeys);
+if (disabledStaleKeys.length > 0) {
+  console.log(`Disabled stale plugin entries: ${disabledStaleKeys.join(", ")}`);
 }
 console.log("Restart or reload Codex so the app picks up the new local marketplace.");

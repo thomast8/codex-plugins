@@ -1,6 +1,6 @@
 # Codex Plugins Marketplace
 
-Personal Codex marketplace repo for Thomas's plugins. Azure DevOps is the first bundled plugin.
+Personal Codex marketplace repo for Thomas's plugins. It currently bundles Azure DevOps and GitHub Local Ops.
 
 The marketplace root is `thomast8/codex-plugins`. The repo-level marketplace file at `.agents/plugins/marketplace.json` points Codex at plugin packages under `plugins/`.
 
@@ -17,6 +17,12 @@ plugins/
     dist/index.bundle.js
     skills/
     src/
+  github-local-ops/
+    .codex-plugin/plugin.json
+    .mcp.json
+    assets/
+    scripts/
+    skills/
 ```
 
 ## Add To Codex
@@ -27,7 +33,12 @@ Add this repo as a Codex marketplace:
 https://github.com/thomast8/codex-plugins
 ```
 
-Codex discovers the marketplace from `.agents/plugins/marketplace.json`; the Azure DevOps plugin package lives at `plugins/azure-devops`.
+Codex discovers the marketplace from `.agents/plugins/marketplace.json`; bundled plugin packages live under `plugins/`.
+
+## Bundled Plugins
+
+- `plugins/azure-devops`: Azure Boards and Azure Repos tools with local stdio support and hosted Microsoft Entra OAuth support.
+- `plugins/github-local-ops`: local GitHub workflows for repos, PRs, issues, Actions, releases, and publishing, backed by the GitHub CLI and git.
 
 ## Azure DevOps Plugin
 
@@ -121,9 +132,9 @@ npm run build
 node scripts/install-local.mjs
 ```
 
-The installer links `plugins/azure-devops` into the iCloud-backed `codex-plugins` marketplace, enables `azure-devops@codex-plugins`, and disables stale standalone `azure-devops@codex-azure-devops-plugin` and legacy `azure-devops@thomas-codex-config` entries if they exist.
-It updates `~/.Codex/config.toml`, writes a timestamped `0600` backup next to that file before changing it, and updates `~/Library/Mobile Documents/com~apple~CloudDocs/Codex-config/.agents/plugins/marketplace.json` plus the `plugins/azure-devops` symlink under that config root.
-For isolated tests, override the defaults with `CODEX_CONFIG_FILE`, `CODEX_CONFIG_ROOT`, and `CODEX_MARKETPLACE_NAME`.
+The installer links every plugin listed in `.agents/plugins/marketplace.json` into the iCloud-backed `codex-plugins` marketplace, enables each `<plugin>@codex-plugins` entry, and disables matching stale standalone entries from older marketplace names if they exist.
+It updates `~/.Codex/config.toml`, writes a timestamped `0600` backup next to that file before changing it, and updates `~/Library/Mobile Documents/com~apple~CloudDocs/Codex-config/.agents/plugins/marketplace.json` plus plugin symlinks under that config root.
+For isolated tests, override the defaults with `CODEX_CONFIG_FILE`, `CODEX_CONFIG_ROOT`, and `CODEX_MARKETPLACE_NAME`. To install only specific plugins, set `CODEX_PLUGINS` to a comma-separated list such as `azure-devops,github-local-ops`.
 
 For local and private testing, prefer Azure CLI after a normal Microsoft sign-in:
 
@@ -190,13 +201,20 @@ Do not create or commit `.env` files.
 ## Verify
 
 ```bash
+npm run verify:manifests
+npm run verify:installer
 npm run build
 npm run lint
 npm test
+npm run github:test
 npm run smoke
 ```
 
 The HTTP MCP contract test binds a local port. In sandboxed Codex sessions, run `npm test` with local networking allowed.
+
+`npm run github:test` checks the GitHub Local Ops script syntax, self-test, and offline MCP contract. The contract disables ref fetching so root verification stays local and deterministic.
+
+GitHub Local Ops public-write execution is off by default. `github_mutation_preview` still shows the exact command and risk notes, but `github_mutation_execute` requires starting the MCP process with `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true` after you deliberately opt in.
 
 Real smoke tests are gated by environment variables:
 

@@ -20,7 +20,14 @@
     "lint": "npm --workspace azure-devops-codex-plugin run lint",
     "test": "npm --workspace azure-devops-codex-plugin run test",
     "smoke": "npm --workspace azure-devops-codex-plugin run smoke",
-    "generate:mcp": "node scripts/generate-mcp-manifest.mjs"
+    "generate:mcp": "node scripts/generate-mcp-manifest.mjs",
+    "verify:manifests": "jq empty .agents/plugins/marketplace.json plugins/azure-devops/.codex-plugin/plugin.json plugins/azure-devops/.mcp.json plugins/github-local-ops/.codex-plugin/plugin.json plugins/github-local-ops/.mcp.json",
+    "verify:installer": "node --check scripts/install-local.mjs",
+    "github:syntax": "node --check plugins/github-local-ops/scripts/github-mcp.mjs && node --check plugins/github-local-ops/scripts/github-mcp-contract.mjs",
+    "github:self-test": "node plugins/github-local-ops/scripts/github-mcp.mjs --self-test",
+    "github:contract": "node plugins/github-local-ops/scripts/github-mcp-contract.mjs",
+    "github:test": "npm run github:syntax && npm run github:self-test && npm run github:contract",
+    "verify:marketplace": "npm run verify:manifests && npm run verify:installer && npm run lint && npm test && npm run github:test"
   },
   "engines": {
     "node": ">=22.13.0"
