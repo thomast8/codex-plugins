@@ -261,7 +261,7 @@ The HTTP MCP contract test binds a local port. In sandboxed Codex sessions, run 
 
 `npm run github:test` checks the GitHub Local Ops script syntax, self-test, and offline MCP contract. The contract disables ref fetching so root verification stays local and deterministic.
 
-GitHub Local Ops public-write execution is off by default. `github_mutation_preview` still shows the exact command and risk notes, but `github_mutation_execute` requires starting the MCP process with `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true` after you deliberately opt in.
+GitHub Local Ops uses preview-owned public-write execution. `github_mutation_preview` shows the exact command and risk notes, then `github_mutation_execute` applies only a live approval token. The bundled plugin manifest starts the MCP process with `--enable-public-writes`; custom launchers can use the same flag or set `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true` after deliberately opting in.
 
 Real smoke tests are gated by environment variables:
 

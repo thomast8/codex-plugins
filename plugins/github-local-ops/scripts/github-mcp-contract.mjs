@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const serverPath = join(pluginRoot, "scripts", "github-mcp.mjs");
+const mcpConfig = JSON.parse(fs.readFileSync(join(pluginRoot, ".mcp.json"), "utf8"));
+const serverConfig = mcpConfig["github-local-ops"];
 const fakeBinDir = fs.mkdtempSync(join(os.tmpdir(), "github-local-ops-contract-"));
 const commandLog = join(fakeBinDir, "commands.jsonl");
 const replyLog = join(fakeBinDir, "replies.jsonl");
@@ -260,14 +261,24 @@ process.exit(1);
 fs.chmodSync(fakeGh, 0o755);
 fs.chmodSync(fakeGit, 0o755);
 
-const child = spawn(process.execPath, [serverPath], {
+if (!serverConfig || serverConfig.command !== "node") {
+  throw new Error("github-local-ops .mcp.json must declare a node command");
+}
+if (!serverConfig.args?.includes("./scripts/github-mcp.mjs")) {
+  throw new Error("github-local-ops .mcp.json must start scripts/github-mcp.mjs");
+}
+if (!serverConfig.args?.includes("--enable-public-writes")) {
+  throw new Error("github-local-ops .mcp.json must enable public writes for provider-owned execution");
+}
+
+const child = spawn(serverConfig.command, serverConfig.args, {
   cwd: pluginRoot,
   stdio: ["pipe", "pipe", "pipe"],
   env: {
     ...process.env,
+    GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES: "",
     GITHUB_LOCAL_OPS_GH_BIN: fakeGh,
     GITHUB_LOCAL_OPS_GIT_BIN: fakeGit,
-    GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES: "true",
     FAKE_COMMAND_LOG: commandLog,
     FAKE_REPLY_LOG: replyLog,
     FAKE_REVIEWER_LOG: reviewerLog,

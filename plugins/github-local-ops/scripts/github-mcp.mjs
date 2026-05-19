@@ -9,11 +9,16 @@ const GH_BIN = process.env.GITHUB_LOCAL_OPS_GH_BIN || "gh";
 const GIT_BIN = process.env.GITHUB_LOCAL_OPS_GIT_BIN || "git";
 const TOKEN_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_APPROVAL_TTL_MS || 10 * 60 * 1000);
 const FETCH_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_FETCH_TTL_MS || 5 * 60 * 1000);
-const PUBLIC_WRITES_ENABLED = /^(1|true|yes)$/i.test(process.env.GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES || "");
+const PUBLIC_WRITES_ENABLED = publicWritesEnabled();
 const DEFAULT_LIMIT = 30;
 const DEFAULT_MAX_BYTES = 200000;
 const approvals = new Map();
 const fetchCache = new Map();
+
+function publicWritesEnabled(env = process.env, argv = process.argv) {
+  return /^(1|true|yes)$/i.test(env.GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES || "")
+    || argv.slice(2).includes("--enable-public-writes");
+}
 
 const repoSchema = {
   repo: {
@@ -376,7 +381,7 @@ const TOOLS = [
   },
   {
     name: "github_mutation_execute",
-    description: "Execute a previously previewed public GitHub write. Disabled unless GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES is set in the MCP process environment.",
+    description: "Execute a previously previewed public GitHub write. Requires the plugin MCP process to be started with --enable-public-writes or GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true.",
     inputSchema: objectSchema({
       approvalToken: {
         type: "string",
@@ -2107,7 +2112,7 @@ async function githubReviewHandoffPreview(input = {}) {
     executableByTool: PUBLIC_WRITES_ENABLED,
     approvalText: PUBLIC_WRITES_ENABLED
       ? "Approve review_handoff before calling github_mutation_execute with this token."
-      : "Execution is disabled in this MCP process. Set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to allow execute after preview."
+      : "Execution is disabled in this MCP process. Start the server with --enable-public-writes or set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to allow execute after preview."
   };
 }
 
@@ -2271,7 +2276,7 @@ async function githubMutationPreview(input = {}) {
     executableByTool: PUBLIC_WRITES_ENABLED,
     approvalText: PUBLIC_WRITES_ENABLED
       ? `Approve ${operation} before calling github_mutation_execute with this token.`
-      : "Execution is disabled in this MCP process. Set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to allow execute after preview."
+      : "Execution is disabled in this MCP process. Start the server with --enable-public-writes or set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to allow execute after preview."
   };
 }
 
@@ -2288,7 +2293,7 @@ async function githubMutationExecute(input = {}) {
   }
   if (!PUBLIC_WRITES_ENABLED) {
     approvals.delete(token);
-    throw new Error("Public GitHub writes are disabled. Set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to enable github_mutation_execute.");
+    throw new Error("Public GitHub writes are disabled. Start the server with --enable-public-writes or set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to enable github_mutation_execute.");
   }
   approvals.delete(token);
   if (approval.plan.kind === "review_handoff") {
@@ -2519,7 +2524,8 @@ async function expectReject(fn) {
 }
 
 async function main() {
-  const [mode, toolName, rawArgs] = process.argv.slice(2);
+  const cliArgs = process.argv.slice(2).filter((arg) => arg !== "--enable-public-writes");
+  const [mode, toolName, rawArgs] = cliArgs;
   if (mode === "--self-test") {
     console.log(JSON.stringify(await runSelfTest(), null, 2));
     return;

@@ -2,7 +2,8 @@
   "github-local-ops": {
     "command": "node",
     "args": [
-      "./scripts/github-mcp.mjs"
+      "./scripts/github-mcp.mjs",
+      "--enable-public-writes"
     ],
     "cwd": "."
   }

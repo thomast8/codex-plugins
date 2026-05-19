@@ -27,7 +27,7 @@
   "safety": {
     "publicSafe": true,
     "authModel": "Uses existing gh CLI authentication and local git configuration.",
-    "writeModel": "Public writes are disabled by default; mutation previews produce approval tokens and exact commands before execution.",
+    "writeModel": "The bundled MCP manifest enables preview-owned execution; mutation previews produce approval tokens and exact commands before execution.",
     "excludedState": [
       "GitHub tokens",
       "gh auth stores",
@@ -39,6 +39,6 @@
   "installNotes": [
     "Requires gh and git on the target machine.",
     "Run setup/status before provider writes or account-sensitive reads.",
-    "Enable public write execution only by setting the opt-in environment variable outside chat."
+    "Custom MCP launchers must pass --enable-public-writes, or set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat, before github_mutation_execute can apply an approved preview."
   ]
 }

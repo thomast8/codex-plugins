@@ -45,7 +45,7 @@ This plugin does not bypass an admin-disabled hosted connector. It uses the user
    - `github_issue_view`
    - `github_release_list`
    - `github_search`
-3. For public writes, call `github_mutation_preview` and show the exact public action. `github_mutation_execute` is disabled unless the MCP process was started with `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`; only execute after explicit user approval.
+3. For public writes, call `github_mutation_preview` and show the exact public action. `github_mutation_execute` applies the approved preview when the MCP process was started by the bundled plugin manifest, with `--enable-public-writes`, or by a custom launcher with `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`; only execute after explicit user approval.
 4. If a GitHub API command fails because authentication is on the wrong account, inspect `gh auth status` and switch accounts only when the user asks or local repo policy requires it.
 
 ## Safe Workflow
@@ -58,7 +58,7 @@ This plugin does not bypass an admin-disabled hosted connector. It uses the user
 For all public writes:
 
 - Call `github_mutation_preview` first and show the operation, target repo/object, public body or fields, command/API call, risk notes, and token expiry context.
-- Only call `github_mutation_execute` after the user explicitly approves the exact preview, and only when the local MCP process has public writes enabled outside chat.
+- Only call `github_mutation_execute` after the user explicitly approves the exact preview, and only when the local MCP process reports `executableByTool: true`.
 - If the preview expires or changes, generate a new preview instead of reusing a stale token.
 
 ## Write Safety
@@ -80,7 +80,7 @@ For all public writes:
 - `github_checks`, `github_actions_runs`: inspect PR checks and workflow runs.
 - `github_pr_handoff_status`: consolidated review-handoff status with PR head SHA, local ahead/behind state, draft state, review requests, human missing-reply threads, bot/CodeQL threads, approved reply readback, checks, and rate-limit evidence.
 - `github_review_handoff_preview`: preview the ordered handoff flow: post approved replies, read back replies, update PR body, re-check CI, then request reviewers. Execution still goes through `github_mutation_execute`.
-- `github_mutation_preview`, `github_mutation_execute`: preview-first write flow with short-lived approval tokens. Execute is off by default and requires `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true` in the MCP process environment.
+- `github_mutation_preview`, `github_mutation_execute`: preview-first write flow with short-lived approval tokens. The bundled plugin manifest enables execution; custom launchers must pass `--enable-public-writes` or set `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`.
 - Local checkout reads do not fetch by default. Pass `autoFetch: true` only after the workflow needs fresh refs; surface `freshness` warnings and fall back to explicit `git fetch --all` when repo policy requires it.
 
 ## Output

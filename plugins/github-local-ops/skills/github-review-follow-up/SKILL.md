@@ -18,7 +18,7 @@ Use this skill when the user asks to address PR review comments, reply to review
 7. Wait for explicit approval before posting.
 8. Before any reviewer re-request, run `github_pr_handoff_status` with the expected head SHA, approved replies, expected PR body marker when relevant, and expected reviewers.
 9. Use `github_review_handoff_preview` for approved replies, PR body update, and reviewer re-request. Echo the preview and wait for explicit approval.
-10. After approval, call `github_mutation_execute` only if public writes are enabled in the MCP process. The MCP posts replies, reads them back, updates the PR body, re-checks CI, then requests reviewers.
+10. After approval, call `github_mutation_execute` only if the preview reports `executableByTool: true`. The MCP posts replies, reads them back, updates the PR body, re-checks CI, then requests reviewers.
 11. Run `github_pr_handoff_status` again before saying handoff is done.
 
 ## Ledger Shape

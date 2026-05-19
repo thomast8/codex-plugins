@@ -14,7 +14,7 @@ Use this skill when the user asks why GitHub Actions, PR checks, or CI is failin
 3. For PR-specific CI, run `github_checks` first. It maps check state into pass, fail, pending, skipping, or cancel buckets.
 4. Run `github_actions_runs` to find the relevant workflow run when check metadata is not enough.
 5. Use `gh run view <run-id> --log-failed` from the shell when logs are needed; summarize the failing step and first actionable error.
-6. If a rerun is appropriate, use `github_mutation_preview` with `operation: "rerun_failed_workflow"` and wait for explicit approval before executing. Execution requires `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true` in the MCP process environment.
+6. If a rerun is appropriate, use `github_mutation_preview` with `operation: "rerun_failed_workflow"` and wait for explicit approval before executing. Execute only when the preview reports `executableByTool: true`.
 
 ## Output
 

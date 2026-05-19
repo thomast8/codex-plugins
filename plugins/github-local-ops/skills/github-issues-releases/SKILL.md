@@ -25,7 +25,7 @@ Use `github_mutation_preview` and wait for explicit approval before:
 - rerunning failed workflow runs
 - creating releases
 
-Public write execution is disabled unless the MCP process was started with `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`. For releases, prefer draft releases unless the user clearly asks to publish immediately. Tag commits before creating a release, and verify the tag points to the intended commit.
+Public write execution requires the preview to report `executableByTool: true`; the bundled plugin manifest starts the MCP process with `--enable-public-writes`, while custom launchers can set `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`. For releases, prefer draft releases unless the user clearly asks to publish immediately. Tag commits before creating a release, and verify the tag points to the intended commit.
 
 ## Output
 
