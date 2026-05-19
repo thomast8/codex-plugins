@@ -53,9 +53,23 @@ For all ticket writes:
 - Review the returned method, URL, headers, and body.
 - Only call again with `apply: true` after the user explicitly approves the change.
 
+## Work Item Search Strategy
+
+When repo or PR work needs Azure Boards tracking, do not rely on one narrow keyword search.
+
+Use a broad-to-specific pass:
+
+- Search explicit IDs from the request, branch, PR title/body, commits, and screenshots.
+- Search domain terms separately, not as one quoted OR string. Prefer WIQL for real OR logic.
+- Look for parent epics/features as well as tasks, bugs, and stories, especially active items assigned to the user.
+- If a broad parent matches but no child work item exists, report the parent candidate and draft a child task that references the parent instead of treating the search as a miss.
+- Keep a small evidence ledger: queries run, candidates found, chosen parent, and proposed child title.
+
+For PR-review cleanup, branch-specific implementation work, or follow-up fixes, prefer drafting a narrowly scoped child task that references the matching epic/feature rather than attaching all status to a broad architecture item. Only create a linked child item when relation-linking support is available and the preview shows the exact parent relation before approval.
+
 ## Tool Notes
 
-- `ado_search_work_items`: use WIQL for precise queries, or the simpler query/type/state filters for exploratory search.
+- `ado_search_work_items`: use WIQL for Boolean searches. The simple `query` field is exploratory text search, not reliable OR logic.
 - `ado_get_work_item`: read full work item details with relations.
 - `ado_create_work_item`, `ado_update_work_item`, `ado_add_work_item_comment`: preview by default and write only when `apply: true`.
 - `ado_list_repositories`, `ado_list_refs`, `ado_list_commits`, `ado_list_items`, `ado_get_file`, `ado_list_pull_requests`, `ado_get_pull_request`: use for Azure Repos lookup.
