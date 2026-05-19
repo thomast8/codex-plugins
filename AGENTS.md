@@ -29,6 +29,12 @@ This file is a public-safe operating guide for working in this marketplace repo.
 - Do not open editors for commits or rebases. Use non-interactive commit and rebase commands.
 - Do not force-push unless the branch rewrite is intentional and the remote/local divergence has been inspected.
 
+## GitNexus
+
+- Use fast structural indexing by default. For stale or missing indexes, run `gitnexus analyze --skip-agents-md`.
+- Reserve `--embeddings` for explicit semantic/vector indexing requests.
+- Worktree helpers should reuse exact-commit indexes when available and defer indexing otherwise.
+
 ## Development
 
 - Keep changes focused and avoid sweeping unrelated refactors.

@@ -283,13 +283,13 @@ export function ensureGitNexusWorktreeIndex({ repoPath = process.cwd(), sourceRo
   if (isLinkedWorktree(resolvedRepo)) {
     return {
       status: "deferred",
-      message: `deferred (no reusable index for ${headSha.slice(0, 7)}; run gitnexus analyze --embeddings --skip-agents-md when graph is needed)`,
+      message: `deferred (no reusable index for ${headSha.slice(0, 7)}; run gitnexus analyze --skip-agents-md when graph is needed)`,
     };
   }
 
   return {
     status: "needs-analyze",
-    message: "stale or missing index - run gitnexus analyze --embeddings --skip-agents-md",
+    message: "stale or missing index - run gitnexus analyze --skip-agents-md",
   };
 }
 

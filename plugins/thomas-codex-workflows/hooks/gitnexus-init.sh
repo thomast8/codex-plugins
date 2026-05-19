@@ -30,7 +30,7 @@ if [ -n "$GIT_DIR" ] && [ -n "$COMMON_DIR" ] && [ "$GIT_DIR" != "$COMMON_DIR" ];
     fi
   fi
 
-  echo "GitNexus: deferred for worktree - run gitnexus analyze --embeddings --skip-agents-md when graph is needed"
+  echo "GitNexus: deferred for worktree - run gitnexus analyze --skip-agents-md when graph is needed"
   exit 0
 fi
 
@@ -39,13 +39,13 @@ if [ -d "$REPO_ROOT/.gitnexus" ]; then
   if [ -r "$META" ] && [ -n "$HEAD_SHA" ]; then
     INDEXED_SHA=$(grep '"lastCommit"' "$META" | head -1 | sed -E 's/.*"lastCommit"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
     if [ -n "$INDEXED_SHA" ] && [ "$INDEXED_SHA" != "$HEAD_SHA" ]; then
-      gitnexus analyze --embeddings --skip-agents-md "$REPO_ROOT" &>/dev/null &
+      gitnexus analyze --skip-agents-md "$REPO_ROOT" &>/dev/null &
       echo "GitNexus: index stale (${INDEXED_SHA:0:7} vs ${HEAD_SHA:0:7}), refreshing in background..."
     fi
   fi
   exit 0
 fi
 
-gitnexus analyze --embeddings --skip-agents-md "$REPO_ROOT" &>/dev/null &
+gitnexus analyze --skip-agents-md "$REPO_ROOT" &>/dev/null &
 echo "GitNexus: indexing repo in background..."
 exit 0

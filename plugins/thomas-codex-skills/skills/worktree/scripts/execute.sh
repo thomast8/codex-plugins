@@ -164,7 +164,7 @@ case "$MODE" in
     HELPER="${HOME}/.Codex/skills/worktree/scripts/gitnexus-worktree-index.mjs"
     if command -v node >/dev/null 2>&1 && [ -f "$HELPER" ]; then
       GITNEXUS_MSG="$(node "$HELPER" --repo "$WT_PATH" --source "$ORIG_ROOT" 2>/dev/null || true)"
-      [ -n "$GITNEXUS_MSG" ] || GITNEXUS_MSG="deferred - run gitnexus analyze --embeddings --skip-agents-md when graph is needed"
+      [ -n "$GITNEXUS_MSG" ] || GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
     else
       HEAD_SHA="$(git -C "$WT_PATH" rev-parse HEAD 2>/dev/null || true)"
       INDEXED_SHA=""
@@ -175,7 +175,7 @@ case "$MODE" in
       if [ -n "$HEAD_SHA" ] && [ "$INDEXED_SHA" = "$HEAD_SHA" ]; then
         GITNEXUS_MSG="already current"
       else
-        GITNEXUS_MSG="deferred - run gitnexus analyze --embeddings --skip-agents-md when graph is needed"
+        GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
       fi
     fi
 

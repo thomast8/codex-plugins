@@ -1,7 +1,8 @@
 #!/bin/bash
 # Dormant Bash helper.
-# Detects `gitnexus analyze` invocations missing --embeddings or
-# --skip-agents-md and schedules a background repair of the affected repo.
+# Detects `gitnexus analyze` invocations missing --skip-agents-md and schedules
+# a background repair of the affected repo.
+# Repairs only --skip-agents-md; embeddings remain explicit opt-in.
 # Complements the patched AGENTS.md rules and any manual GitNexus maintenance.
 # they cover Codex-initiated calls; this catches anything else (Codex, manual
 # typing, future plugins, `npx gitnexus`, etc).
@@ -17,9 +18,8 @@ if ! echo "$CMD" | grep -qE '(^|[^[:alnum:]_/-])gitnexus[[:space:]]+analyze'; th
     exit 0
 fi
 
-# Bail if both safe flags were explicitly passed - trust the caller.
-if echo "$CMD" | grep -qE '(^|[[:space:]])--embeddings([[:space:]=]|$)' && \
-   echo "$CMD" | grep -qE '(^|[[:space:]])--skip-agents-md([[:space:]=]|$)'; then
+# Bail if the safe flag was explicitly passed - trust the caller.
+if echo "$CMD" | grep -qE '(^|[[:space:]])--skip-agents-md([[:space:]=]|$)'; then
     exit 0
 fi
 
@@ -42,10 +42,10 @@ fi
 [ -z "${REPO_PATH:-}" ] && exit 0
 [ ! -d "$REPO_PATH/.gitnexus" ] && exit 0
 
-# Short delay lets the original analyze finish before we re-run with embeddings.
+# Short delay lets the original analyze finish before we re-run with --skip-agents-md.
 # Per-repo lock prevents two repair jobs colliding on the same LadybugDB file.
 # Log repair events so wipes are traceable.
-LOG="${CODEX_LOG_DIR:-${HOME}/.Codex/log}/gitnexus-embedding-guard.log"
+LOG="${CODEX_LOG_DIR:-${HOME}/.Codex/log}/gitnexus-analyze-guard.log"
 mkdir -p "$(dirname "$LOG")"
 LOCK=/tmp/gitnexus-repair-$(printf '%s' "$REPO_PATH" | shasum | cut -c1-12).lock
 (
@@ -55,8 +55,8 @@ LOCK=/tmp/gitnexus-repair-$(printf '%s' "$REPO_PATH" | shasum | cut -c1-12).lock
         exit 0
     fi
     trap 'rmdir "$LOCK" 2>/dev/null' EXIT
-    printf '[%s] repair: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REPO_PATH" >> "$LOG"
-    gitnexus analyze --embeddings --skip-agents-md --force "$REPO_PATH" >> "$LOG" 2>&1
+    printf '[%s] repair skip-agents-md: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REPO_PATH" >> "$LOG"
+    gitnexus analyze --skip-agents-md --force "$REPO_PATH" >> "$LOG" 2>&1
     printf '[%s] done:   %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$REPO_PATH" >> "$LOG"
 ) &
 disown 2>/dev/null || true

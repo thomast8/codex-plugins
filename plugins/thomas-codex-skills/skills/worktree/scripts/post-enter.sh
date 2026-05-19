@@ -105,7 +105,7 @@ run_gitnexus_index() {
   local helper="${HOME}/.Codex/skills/worktree/scripts/gitnexus-worktree-index.mjs"
   if command -v node >/dev/null 2>&1 && [ -f "$helper" ]; then
     GITNEXUS_MSG="$(node "$helper" --repo "$WT_PATH" --source "$MAIN_ROOT" 2>/dev/null || true)"
-    [ -n "$GITNEXUS_MSG" ] || GITNEXUS_MSG="deferred - run gitnexus analyze --embeddings --skip-agents-md when graph is needed"
+    [ -n "$GITNEXUS_MSG" ] || GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
     return
   fi
 
@@ -121,7 +121,7 @@ run_gitnexus_index() {
     return
   fi
 
-  GITNEXUS_MSG="deferred - run gitnexus analyze --embeddings --skip-agents-md when graph is needed"
+  GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
 }
 run_gitnexus_index
 

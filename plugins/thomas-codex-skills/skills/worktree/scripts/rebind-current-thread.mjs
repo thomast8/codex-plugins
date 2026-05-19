@@ -328,7 +328,7 @@ function refreshGitNexus(worktreePath, sourceRoot) {
   try {
     return ensureGitNexusWorktreeIndex({ repoPath: worktreePath, sourceRoot }).message;
   } catch (error) {
-    return `deferred - run gitnexus analyze --embeddings --skip-agents-md when graph is needed (${error.message})`;
+    return `deferred - run gitnexus analyze --skip-agents-md when graph is needed (${error.message})`;
   }
 }
 

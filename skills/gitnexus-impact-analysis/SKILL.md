@@ -11,7 +11,7 @@ description: Analyze blast radius before making code changes
    the target repo. In multi-repo sessions, pass `repo` on every GitNexus call.
 2. **Check freshness.** Compare the selected repo's indexed commit or
    `indexedAt` with `git log -1 --format=%H`. If the index is stale, run
-   `gitnexus analyze --embeddings --skip-agents-md`, re-check freshness, and
+   `gitnexus analyze --skip-agents-md`, re-check freshness, and
    only continue once the graph is current. If GitNexus is unavailable, report
    that as a blocker instead of silently substituting grep.
 3. **Call the exposed MCP tools by their actual names**, such as
@@ -35,7 +35,7 @@ description: Analyze blast radius before making code changes
 3. Assess risk and report to user
 ```
 
-> If the index is stale, run `gitnexus analyze --embeddings --skip-agents-md`.
+> If the index is stale, run `gitnexus analyze --skip-agents-md`.
 
 ## Checklist
 
