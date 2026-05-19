@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "name": "azure-devops",
+  "displayName": "Azure DevOps",
+  "summary": "Connect Codex to Azure Boards work items and Azure Repos code evidence.",
+  "purpose": "Use this plugin when Codex needs provider-backed Azure DevOps context for planning, ticket hygiene, repository inspection, pull request evidence, or safe work item updates.",
+  "whenToUse": [
+    "Find, summarize, create, update, or comment on Azure Boards work items.",
+    "Inspect Azure Repos repositories, refs, commits, files, or pull requests.",
+    "Connect code changes with planning evidence before or after implementation.",
+    "Check connection, organization, project, and repository allowlist setup."
+  ],
+  "surfaces": {
+    "skills": [
+      "azure-devops"
+    ],
+    "mcpServers": [
+      "azure-devops"
+    ],
+    "hooks": []
+  },
+  "safety": {
+    "publicSafe": true,
+    "authModel": "Hosted Microsoft Entra OAuth or local Azure CLI/PAT fallback outside chat.",
+    "writeModel": "Work item writes are preview-first and require an explicit apply step.",
+    "excludedState": [
+      "OAuth token stores",
+      "Azure DevOps PATs",
+      "organization-private work item data",
+      "local SQLite runtime stores",
+      "deployment secrets"
+    ]
+  },
+  "installNotes": [
+    "The checked-in MCP manifest points at the bundled local stdio server.",
+    "Hosted deployment manifests are generated separately from a public HTTPS base URL.",
+    "Use the setup/status tools before asking the user for fallback auth."
+  ]
+}

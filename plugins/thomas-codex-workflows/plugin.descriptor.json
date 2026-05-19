@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "name": "thomas-codex-workflows",
+  "displayName": "Thomas Codex Workflows",
+  "summary": "Personal Codex hooks for repo safety, GitNexus upkeep, GitHub account checks, and worktree lifecycle support.",
+  "purpose": "Use this plugin to make ordinary Codex sessions safer and more context-aware through hooks that run around shell commands, search commands, session start, and worktree create/remove events.",
+  "whenToUse": [
+    "Keep GitNexus indexes fresh and inject graph context during code exploration.",
+    "Guard main-branch commits and pushes unless the user explicitly allows them.",
+    "Switch or check GitHub auth context before GitHub CLI operations.",
+    "Prepare and clean up worktree metadata during worktree lifecycle events."
+  ],
+  "surfaces": {
+    "skills": [],
+    "mcpServers": [],
+    "hooks": [
+      "PreToolUse",
+      "SessionStart",
+      "WorktreeCreate",
+      "WorktreeRemove"
+    ]
+  },
+  "safety": {
+    "publicSafe": true,
+    "authModel": "Uses local command state such as git, gh, and GitNexus without publishing credentials.",
+    "writeModel": "Hooks may block risky commands or update local worktree metadata, but do not publish remote changes by themselves.",
+    "excludedState": [
+      "GitHub auth tokens",
+      "GitNexus local indexes",
+      "project memories",
+      "logs",
+      "session state"
+    ]
+  },
+  "installNotes": [
+    "Hooks rely on the Codex compatibility variable for plugin root resolution.",
+    "The GitNexus hooks intentionally pass embeddings and skip AGENTS.md injection.",
+    "This plugin is machine-local behavior, not a source of secrets or project memory."
+  ]
+}

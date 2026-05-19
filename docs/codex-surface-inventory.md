@@ -13,6 +13,7 @@ This inventory describes what belongs in this public marketplace repo and what r
 ## Personal Plugins
 
 These are bundled in this repo under `plugins/` and listed in `.agents/plugins/marketplace.json`.
+Each plugin also carries `plugin.descriptor.json`, a public-safe explanatory manifest that describes purpose, use cases, exposed surfaces, safety model, excluded state, and install notes.
 
 - `azure-devops`: Azure Boards and Azure Repos MCP integration with preview-first writes.
 - `github-local-ops`: local GitHub workflows backed by `gh` and `git`.

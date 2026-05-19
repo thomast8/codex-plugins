@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "name": "github-local-ops",
+  "displayName": "GitHub Local Ops",
+  "summary": "Use local GitHub CLI authentication and git state for repository, PR, CI, issue, release, and publishing workflows.",
+  "purpose": "Use this plugin when Codex needs GitHub evidence or GitHub write previews from the local machine, especially when the hosted connector is unavailable or when local git state matters.",
+  "whenToUse": [
+    "Inspect repositories, pull requests, review threads, checks, workflow runs, issues, releases, or search results.",
+    "Prepare commits, pushes, draft pull requests, reviewer-ready PR bodies, or release notes.",
+    "Debug GitHub Actions using local gh authentication and provider-style readbacks.",
+    "Preview public GitHub writes before asking for explicit approval."
+  ],
+  "surfaces": {
+    "skills": [
+      "github",
+      "github-ci-debug",
+      "github-issues-releases",
+      "github-pr-triage",
+      "github-publish-changes",
+      "github-review-follow-up"
+    ],
+    "mcpServers": [
+      "github-local-ops"
+    ],
+    "hooks": []
+  },
+  "safety": {
+    "publicSafe": true,
+    "authModel": "Uses existing gh CLI authentication and local git configuration.",
+    "writeModel": "Public writes are disabled by default; mutation previews produce approval tokens and exact commands before execution.",
+    "excludedState": [
+      "GitHub tokens",
+      "gh auth stores",
+      "private repository data",
+      "workflow logs fetched at runtime",
+      "local git credentials"
+    ]
+  },
+  "installNotes": [
+    "Requires gh and git on the target machine.",
+    "Run setup/status before provider writes or account-sensitive reads.",
+    "Enable public write execution only by setting the opt-in environment variable outside chat."
+  ]
+}

@@ -12,6 +12,7 @@ Requires Node.js 22.13.0 or newer.
 plugins/
   azure-devops/
     .codex-plugin/plugin.json
+    plugin.descriptor.json
     .mcp.json
     .mcp.local.json
     assets/
@@ -20,15 +21,18 @@ plugins/
     src/
   github-local-ops/
     .codex-plugin/plugin.json
+    plugin.descriptor.json
     .mcp.json
     assets/
     scripts/
     skills/
   thomas-codex-workflows/
     .codex-plugin/plugin.json
+    plugin.descriptor.json
     hooks/
   thomas-codex-skills/
     .codex-plugin/plugin.json
+    plugin.descriptor.json
     skills/
 skills/
   review-code/
@@ -54,6 +58,8 @@ Codex discovers the marketplace from `.agents/plugins/marketplace.json`; bundled
 - `plugins/github-local-ops`: local GitHub workflows for repos, PRs, issues, Actions, releases, and publishing, backed by the GitHub CLI and git.
 - `plugins/thomas-codex-workflows`: personal repo-safety hooks for GitNexus maintenance, GitHub auth switching, branch safety, PR creation reminders, and worktree lifecycle setup.
 - `plugins/thomas-codex-skills`: active personal skills packaged as one marketplace plugin.
+
+Each plugin includes `plugin.descriptor.json`, a public-safe explanatory manifest with the plugin's purpose, when to use it, exposed skills/MCP servers/hooks, safety model, excluded state, and install notes. `npm run verify:plugin-descriptors` checks that these descriptors match the official Codex `plugin.json` entrypoints.
 
 ## Personal Skills
 
@@ -239,6 +245,7 @@ Do not create or commit `.env` files.
 
 ```bash
 npm run verify:manifests
+npm run verify:plugin-descriptors
 npm run verify:installer
 npm run verify:skills
 npm run public-safety
