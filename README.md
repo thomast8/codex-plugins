@@ -1,9 +1,9 @@
 # Codex Plugins Marketplace
 
-Personal Codex marketplace repo for Thomas's plugins. It currently bundles Azure DevOps, GitHub Local Ops, and Thomas Codex Workflows.
+Personal Codex marketplace repo for Thomas's plugins. It currently bundles Azure DevOps, GitHub Local Ops, Thomas Codex Workflows, and Thomas Codex Skills.
 
 The marketplace root is `thomast8/codex-plugins`. The repo-level marketplace file at `.agents/plugins/marketplace.json` points Codex at plugin packages under `plugins/`.
-Standalone personal skills live under `skills/` and are installed as top-level skills so their names stay stable across machines.
+Standalone personal skills live under `skills/`, are mirrored into `plugins/thomas-codex-skills/skills/` for marketplace installation, and are installed as top-level skills by the bootstrap script so their names stay stable across machines.
 
 Requires Node.js 22.13.0 or newer.
 
@@ -27,6 +27,9 @@ plugins/
   thomas-codex-workflows/
     .codex-plugin/plugin.json
     hooks/
+  thomas-codex-skills/
+    .codex-plugin/plugin.json
+    skills/
 skills/
   review-code/
   worktree/
@@ -50,10 +53,16 @@ Codex discovers the marketplace from `.agents/plugins/marketplace.json`; bundled
 - `plugins/azure-devops`: Azure Boards and Azure Repos tools with local stdio support and hosted Microsoft Entra OAuth support.
 - `plugins/github-local-ops`: local GitHub workflows for repos, PRs, issues, Actions, releases, and publishing, backed by the GitHub CLI and git.
 - `plugins/thomas-codex-workflows`: personal repo-safety hooks for GitNexus maintenance, GitHub auth switching, branch safety, PR creation reminders, and worktree lifecycle setup.
+- `plugins/thomas-codex-skills`: active personal skills packaged as one marketplace plugin.
 
 ## Personal Skills
 
-The installer links active skills from `skills/` into the Codex skills root without changing their names. Archived skills live under `archived-skills/` for recovery and are not installed by default.
+The same active skills are available in two forms:
+
+- As plugin-marked skills through `plugins/thomas-codex-skills`, which Codex can install from the marketplace UI.
+- As top-level skills linked by `scripts/install-local.mjs`, which keeps names such as `worktree`, `review-code`, and `reconcile` available without a plugin prefix.
+
+Archived skills live under `archived-skills/` for recovery and are not installed by default. `npm run verify:skills` checks that the plugin-marked skill copy stays in sync with `skills/`.
 
 See `docs/codex-surface-inventory.md` for the public-safe inventory of bundled plugins, active skills, safe MCP declarations, and intentionally excluded local state.
 

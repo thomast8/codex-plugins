@@ -6,6 +6,12 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const skillsRoot = path.join(repoRoot, "skills");
 const archivedSkillsRoot = path.join(repoRoot, "archived-skills");
+const pluginSkillsRoot = path.join(
+  repoRoot,
+  "plugins",
+  "thomas-codex-skills",
+  "skills"
+);
 
 function fail(message) {
   console.error(message);
@@ -45,6 +51,67 @@ function parseFrontmatterDescription(contents) {
   return descriptionMatch?.[1]?.trim() ?? null;
 }
 
+function relativeSkillFiles(root, { skipHiddenRootDirs = false } = {}) {
+  const files = [];
+
+  function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = path.join(dir, entry.name);
+      const relativePath = path.relative(root, fullPath);
+      if (entry.name.startsWith(".")) {
+        if (skipHiddenRootDirs && dir === root && entry.isDirectory()) {
+          continue;
+        }
+        fail(`${relativePath} must not be a hidden file or directory.`);
+        continue;
+      }
+      const stat = fs.lstatSync(fullPath);
+      if (stat.isSymbolicLink()) {
+        fail(`${relativePath} must not be a symlink.`);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        files.push(relativePath);
+      }
+    }
+  }
+
+  walk(root);
+  return files.sort();
+}
+
+function verifyPluginSkillMirror() {
+  if (!fs.existsSync(pluginSkillsRoot)) {
+    fail("plugins/thomas-codex-skills/skills is missing.");
+    return;
+  }
+
+  const sourceFiles = relativeSkillFiles(skillsRoot, { skipHiddenRootDirs: true });
+  const mirrorFiles = relativeSkillFiles(pluginSkillsRoot);
+  const sourceSet = new Set(sourceFiles);
+  const mirrorSet = new Set(mirrorFiles);
+
+  for (const filePath of sourceFiles) {
+    if (!mirrorSet.has(filePath)) {
+      fail(`plugins/thomas-codex-skills/skills is missing ${filePath}.`);
+      continue;
+    }
+    const source = fs.readFileSync(path.join(skillsRoot, filePath));
+    const mirror = fs.readFileSync(path.join(pluginSkillsRoot, filePath));
+    if (!source.equals(mirror)) {
+      fail(`plugins/thomas-codex-skills/skills/${filePath} differs from skills/${filePath}.`);
+    }
+  }
+
+  for (const filePath of mirrorFiles) {
+    if (!sourceSet.has(filePath)) {
+      fail(`plugins/thomas-codex-skills/skills contains extra file ${filePath}.`);
+    }
+  }
+}
+
 const activeSkills = skillDirs(skillsRoot);
 const archivedSkills = skillDirs(archivedSkillsRoot, { includeArchived: true });
 
@@ -71,10 +138,12 @@ if (activeSkills.length === 0) {
   fail("No active skills found under skills/.");
 }
 
+verifyPluginSkillMirror();
+
 if (process.exitCode) {
   process.exit(process.exitCode);
 }
 
 console.log(
-  `Verified ${activeSkills.length} active skills and ${archivedSkills.length} archived skills.`
+  `Verified ${activeSkills.length} active skills, ${archivedSkills.length} archived skills, and the Thomas Codex Skills plugin mirror.`
 );

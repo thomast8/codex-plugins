@@ -21,7 +21,7 @@
     "test": "npm --workspace azure-devops-codex-plugin run test",
     "smoke": "npm --workspace azure-devops-codex-plugin run smoke",
     "generate:mcp": "node scripts/generate-mcp-manifest.mjs",
-    "verify:manifests": "jq empty .agents/plugins/marketplace.json plugins/azure-devops/.codex-plugin/plugin.json plugins/azure-devops/.mcp.json plugins/github-local-ops/.codex-plugin/plugin.json plugins/github-local-ops/.mcp.json plugins/thomas-codex-workflows/.codex-plugin/plugin.json plugins/thomas-codex-workflows/hooks/hooks.json",
+    "verify:manifests": "jq empty .agents/plugins/marketplace.json plugins/azure-devops/.codex-plugin/plugin.json plugins/azure-devops/.mcp.json plugins/github-local-ops/.codex-plugin/plugin.json plugins/github-local-ops/.mcp.json plugins/thomas-codex-workflows/.codex-plugin/plugin.json plugins/thomas-codex-workflows/hooks/hooks.json plugins/thomas-codex-skills/.codex-plugin/plugin.json",
     "verify:installer": "node --check scripts/install-local.mjs",
     "verify:skills": "node scripts/verify-skills.mjs",
     "public-safety": "node scripts/public-safety-scan.mjs",

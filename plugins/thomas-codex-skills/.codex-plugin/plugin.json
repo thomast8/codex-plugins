@@ -1,0 +1,43 @@
+{
+  "name": "thomas-codex-skills",
+  "version": "0.1.0",
+  "description": "Personal Codex skills packaged as one marketplace plugin for Git workflows, reviews, debugging, frontend design, and GitNexus-assisted code navigation.",
+  "author": {
+    "name": "Thomas Tiotto",
+    "url": "https://github.com/thomast8"
+  },
+  "homepage": "https://github.com/thomast8/codex-plugins#readme",
+  "repository": "https://github.com/thomast8/codex-plugins",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "skills",
+    "workflow",
+    "gitnexus",
+    "review",
+    "worktree"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Thomas Codex Skills",
+    "shortDescription": "Personal Codex skills bundle",
+    "longDescription": "Installs Thomas's reusable Codex skills as one marketplace plugin, including worktree workflows, review gates, reconciliation, debugging, frontend design, reviewer selection, and GitNexus-assisted code exploration.",
+    "developerName": "Thomas Tiotto",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use the worktree skill",
+      "Run the review-code skill",
+      "Use GitNexus to explore this repo"
+    ],
+    "brandColor": "#0F766E",
+    "websiteURL": "https://github.com/thomast8/codex-plugins/tree/main/plugins/thomas-codex-skills",
+    "privacyPolicyURL": "https://github.com/thomast8/codex-plugins/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/thomast8/codex-plugins/blob/main/LICENSE",
+    "screenshots": []
+  }
+}

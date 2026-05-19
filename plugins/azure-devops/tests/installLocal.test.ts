@@ -16,6 +16,7 @@ describe("local installer", () => {
   const pluginSource = path.join(repoRoot, "plugins", "azure-devops");
   const githubPluginSource = path.join(repoRoot, "plugins", "github-local-ops");
   const workflowsPluginSource = path.join(repoRoot, "plugins", "thomas-codex-workflows");
+  const skillsPluginSource = path.join(repoRoot, "plugins", "thomas-codex-skills");
   const ghAuthSwitchPath = path.join(workflowsPluginSource, "hooks", "gh-auth-switch.sh");
   const repoSafetyPath = path.join(workflowsPluginSource, "hooks", "repo-safety.sh");
   const worktreeCreatePath = path.join(workflowsPluginSource, "hooks", "worktree-create.sh");
@@ -194,6 +195,7 @@ describe("local installer", () => {
         "Plugins: azure-devops@codex-plugins",
         "github-local-ops@codex-plugins",
         "thomas-codex-workflows@codex-plugins",
+        "thomas-codex-skills@codex-plugins",
       ].join(", ")
     );
     expect(stdout).toContain("Skills: ");
@@ -207,6 +209,8 @@ describe("local installer", () => {
         "github-local-ops@thomas-codex-config",
         "thomas-codex-workflows@codex-azure-devops-plugin",
         "thomas-codex-workflows@thomas-codex-config",
+        "thomas-codex-skills@codex-azure-devops-plugin",
+        "thomas-codex-skills@thomas-codex-config",
       ].join(", ")
     );
 
@@ -221,6 +225,9 @@ describe("local installer", () => {
     );
     expect(updatedConfig).toContain(
       '[plugins."thomas-codex-workflows@codex-plugins"]\nenabled = true'
+    );
+    expect(updatedConfig).toContain(
+      '[plugins."thomas-codex-skills@codex-plugins"]\nenabled = true'
     );
     expect(updatedConfig).toContain(
       '[plugins."azure-devops@codex-azure-devops-plugin"]\nenabled = false'
@@ -239,6 +246,12 @@ describe("local installer", () => {
     );
     expect(updatedConfig).toContain(
       '[plugins."thomas-codex-workflows@thomas-codex-config"]\nenabled = false'
+    );
+    expect(updatedConfig).toContain(
+      '[plugins."thomas-codex-skills@codex-azure-devops-plugin"]\nenabled = false'
+    );
+    expect(updatedConfig).toContain(
+      '[plugins."thomas-codex-skills@thomas-codex-config"]\nenabled = false'
     );
     expect(updatedConfig).not.toContain('source = "/old/config/root"');
     expect(updatedConfig).not.toContain(
@@ -280,6 +293,11 @@ describe("local installer", () => {
     expect(fs.lstatSync(workflowsPluginLink).isSymbolicLink()).toBe(true);
     expect(fs.realpathSync(workflowsPluginLink)).toBe(
       fs.realpathSync(workflowsPluginSource)
+    );
+    const skillsPluginLink = path.join(configRoot, "plugins", "thomas-codex-skills");
+    expect(fs.lstatSync(skillsPluginLink).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(skillsPluginLink)).toBe(
+      fs.realpathSync(skillsPluginSource)
     );
     const reviewCodeSkillLink = path.join(homeDir, ".Codex", "skills", "review-code");
     expect(fs.lstatSync(reviewCodeSkillLink).isSymbolicLink()).toBe(true);
@@ -346,6 +364,24 @@ describe("local installer", () => {
         },
       })
     );
+    const skillPluginEntries = marketplace.plugins.filter(
+      (plugin) => plugin.name === "thomas-codex-skills"
+    );
+    expect(skillPluginEntries).toHaveLength(1);
+    expect(skillPluginEntries[0]).toEqual(
+      expect.objectContaining({
+        name: "thomas-codex-skills",
+        source: {
+          source: "local",
+          path: "./plugins/thomas-codex-skills",
+        },
+        policy: {
+          installation: "AVAILABLE",
+          authentication: "ON_INSTALL",
+        },
+        category: "Productivity",
+      })
+    );
 
     const firstBackups = configBackups(configPath);
     expect(firstBackups).toHaveLength(1);
@@ -401,6 +437,7 @@ describe("local installer", () => {
     expect(stdout).toContain("Plugins: github-local-ops@codex-plugins");
     expect(fs.existsSync(path.join(configRoot, "plugins", "azure-devops"))).toBe(false);
     expect(fs.existsSync(path.join(configRoot, "plugins", "thomas-codex-workflows"))).toBe(false);
+    expect(fs.existsSync(path.join(configRoot, "plugins", "thomas-codex-skills"))).toBe(false);
     const githubPluginLink = path.join(configRoot, "plugins", "github-local-ops");
     expect(fs.lstatSync(githubPluginLink).isSymbolicLink()).toBe(true);
     expect(fs.realpathSync(githubPluginLink)).toBe(

@@ -17,10 +17,11 @@ These are bundled in this repo under `plugins/` and listed in `.agents/plugins/m
 - `azure-devops`: Azure Boards and Azure Repos MCP integration with preview-first writes.
 - `github-local-ops`: local GitHub workflows backed by `gh` and `git`.
 - `thomas-codex-workflows`: personal Codex workflow hooks for repo safety, GitNexus upkeep, auth switching, and worktree lifecycle setup.
+- `thomas-codex-skills`: active personal skills packaged as a single marketplace plugin.
 
 ## Standalone Personal Skills
 
-These are installed as top-level skills so their names remain stable across machines.
+These are installed as top-level skills so their names remain stable across machines. The same skill files are mirrored into `plugins/thomas-codex-skills/skills/` so they can also be installed from the marketplace UI as plugin-marked skills.
 
 - `find-reviewer`
 - `frontend-design`
@@ -72,4 +73,4 @@ Do not publish or vendor:
 4. Run `node scripts/install-local.mjs`.
 5. Restart or reload Codex.
 
-Use `CODEX_CONFIG_FILE`, `CODEX_CONFIG_ROOT`, `CODEX_SKILLS_ROOT`, `CODEX_PLUGINS`, `CODEX_SKILLS`, and `CODEX_MCPS` for dry runs or partial installs.
+Use the Codex marketplace UI to install `Thomas Codex Skills` when you want plugin-marked skill names. Use `CODEX_CONFIG_FILE`, `CODEX_CONFIG_ROOT`, `CODEX_SKILLS_ROOT`, `CODEX_PLUGINS`, `CODEX_SKILLS`, and `CODEX_MCPS` for dry runs or partial installs.
