@@ -56,6 +56,82 @@ function writeJsonl(filePath, value) {
   fs.appendFileSync(filePath, JSON.stringify(value) + "\\n");
 }
 if (args[0] === "api" && args[1] === "graphql") {
+  const queryArg = args.find((arg) => arg.startsWith("query=")) || "";
+  if (queryArg.includes("pullRequests(states: OPEN")) {
+    const includeChecks = queryArg.includes("statusCheckRollup");
+    const checks = includeChecks
+      ? {
+          statusCheckRollup: {
+            state: "SUCCESS",
+            contexts: {
+              totalCount: 1,
+              pageInfo: { hasNextPage: false, endCursor: null },
+              nodes: [
+                {
+                  __typename: "CheckRun",
+                  name: "unit",
+                  status: "COMPLETED",
+                  conclusion: "SUCCESS",
+                  detailsUrl: "https://github.com/owner/repo/actions/runs/1",
+                  startedAt: "2026-05-19T10:15:00Z",
+                  completedAt: "2026-05-19T10:20:00Z",
+                  checkSuite: { workflowRun: { workflow: { name: "CI" } } }
+                }
+              ]
+            }
+          }
+        }
+      : {};
+    console.log(JSON.stringify({
+      data: {
+        subject: {
+          login: "thomast8",
+          pullRequests: {
+            totalCount: 2,
+            pageInfo: { hasNextPage: false, endCursor: null },
+            nodes: [
+              {
+                number: 1,
+                title: "Base PR",
+                url: "https://github.com/owner/repo/pull/1",
+                state: "OPEN",
+                isDraft: false,
+                updatedAt: "2026-05-19T10:00:00Z",
+                reviewDecision: "REVIEW_REQUIRED",
+                baseRefName: "main",
+                baseRefOid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                headRefName: "feature/base",
+                headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                author: { login: "thomast8" },
+                repository: { nameWithOwner: "owner/repo" },
+                headRepository: { nameWithOwner: "owner/repo" },
+                ...checks
+              },
+              {
+                number: 2,
+                title: "Child PR",
+                url: "https://github.com/owner/repo/pull/2",
+                state: "OPEN",
+                isDraft: true,
+                updatedAt: "2026-05-19T10:01:00Z",
+                reviewDecision: null,
+                baseRefName: "feature/base",
+                baseRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                headRefName: "feature/child",
+                headRefOid: "cccccccccccccccccccccccccccccccccccccccc",
+                author: { login: "thomast8" },
+                repository: { nameWithOwner: "owner/repo" },
+                headRepository: { nameWithOwner: "owner/repo" },
+                ...checks
+              }
+            ]
+          }
+        },
+        rateLimit: { limit: 5000, cost: 1, remaining: 4999, resetAt: "2026-05-19T11:00:00Z", used: 1 }
+      }
+    }));
+    process.exit(0);
+  }
   const body = fs.existsSync(process.env.FAKE_BODY_FILE)
     ? fs.readFileSync(process.env.FAKE_BODY_FILE, "utf8")
     : "Initial PR body";
@@ -169,6 +245,19 @@ if (args[0] === "api" && args[1] === "graphql") {
       },
       rateLimit: { limit: 5000, cost: 1, remaining: 4999, resetAt: "2026-05-19T11:00:00Z", used: 1 }
     }
+  }));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1]?.startsWith("repos/owner/repo/compare/")) {
+  const stale = args[1].includes("feature%2Fchild");
+  console.log(JSON.stringify({
+    status: stale ? "diverged" : "ahead",
+    aheadBy: stale ? 2 : 1,
+    behindBy: stale ? 1 : 0,
+    baseCommit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    mergeBaseCommit: stale
+      ? "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      : "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   }));
   process.exit(0);
 }
@@ -374,6 +463,8 @@ async function main() {
     "github_setup_status",
     "github_current_context",
     "github_pr_view",
+    "github_my_pull_requests",
+    "github_pr_rebase_plan",
     "github_pr_handoff_status",
     "github_review_handoff_preview",
     "github_mutation_preview",
@@ -403,7 +494,44 @@ async function main() {
   if (setup.git?.origin !== "https://[redacted]@github.com/owner/repo.git") {
     throw new Error("github_setup_status did not redact credentialed origin URL");
   }
-  const callsAfterStatus = readCommandLog().length;
+
+  const myPullRequests = await request("tools/call", {
+    name: "github_my_pull_requests",
+    arguments: {
+      cwd: pluginRoot,
+      limit: 10,
+      includeChecks: true
+    }
+  });
+  const myPullRequestsJson = jsonContent(myPullRequests);
+  if (myPullRequestsJson.discovery?.strategy !== "graphql_viewer_pull_requests") {
+    throw new Error("github_my_pull_requests did not use GraphQL viewer discovery");
+  }
+  if (myPullRequestsJson.pullRequests?.length !== 2 || myPullRequestsJson.abstract?.drafts !== 1) {
+    throw new Error("github_my_pull_requests did not return authored open PRs including drafts");
+  }
+  if (myPullRequestsJson.pullRequests[0]?.checks?.pass !== 1) {
+    throw new Error("github_my_pull_requests did not include requested check summary");
+  }
+
+  const rebasePlan = await request("tools/call", {
+    name: "github_pr_rebase_plan",
+    arguments: {
+      cwd: pluginRoot,
+      pullRequests: myPullRequestsJson.pullRequests,
+      checkStaleness: true
+    }
+  });
+  const rebasePlanJson = jsonContent(rebasePlan);
+  const orderedNumbers = rebasePlanJson.orderedPullRequests.map((pr) => pr.number).join(",");
+  if (orderedNumbers !== "1,2") {
+    throw new Error("github_pr_rebase_plan did not order stacked PRs parent-first");
+  }
+  const childPlan = rebasePlanJson.orderedPullRequests.find((pr) => pr.number === 2);
+  if (childPlan?.dependsOn?.[0]?.number !== 1 || childPlan?.staleness?.status !== "stale") {
+    throw new Error("github_pr_rebase_plan did not report child dependency and stale status");
+  }
+  const callsBeforeMutationPreview = readCommandLog().length;
 
   const preview = await request("tools/call", {
     name: "github_mutation_preview",
@@ -426,7 +554,7 @@ async function main() {
   if (previewJson.executableByTool !== true) {
     throw new Error("github_mutation_preview should report execution enabled in the fake public-write process");
   }
-  if (readCommandLog().length !== callsAfterStatus) {
+  if (readCommandLog().length !== callsBeforeMutationPreview) {
     throw new Error("github_mutation_preview should not invoke gh or git");
   }
 

@@ -34,6 +34,8 @@ This plugin does not bypass an admin-disabled hosted connector. It uses the user
    - `github_setup_status`
    - `github_repo_view`
    - `github_pr_list`
+   - `github_my_pull_requests`
+   - `github_pr_rebase_plan`
    - `github_pr_view`
    - `github_pr_diff`
    - `github_pr_review_threads`
@@ -75,6 +77,9 @@ For all public writes:
 - `github_setup_status`: readiness, auth, and repo-resolution check.
 - `github_current_context`: current checkout, branch, remote, auth text, and resolved repo.
 - `github_repo_view`, `github_pr_list`, `github_pr_view`, `github_issue_list`, `github_issue_view`, `github_release_list`, `github_search`: read metadata through `gh`; use `abstract` for the quick state and full payloads for evidence.
+- `github_my_pull_requests`: discover open authored PRs across accessible private and public repositories with GraphQL `viewer.pullRequests` by default. Pass `author` for explicit author discovery through GraphQL `user.pullRequests`; use this instead of `github_search` for private-org authored PR completeness.
+- `github_pr_rebase_plan`: build a parent-first order for stacked PRs by matching `baseRefName` to another PR's `headRefName`, and optionally mark each PR current, stale, or unknown through GitHub compare evidence.
+- `github_search`: useful for ad hoc search, but PR and repo searches are search-index backed and can be incomplete for private org automation. Do not use code search or PR search as the primary authored-PR discovery path.
 - `github_pr_diff`: read PR diff or changed-file list with truncation controls.
 - `github_pr_review_threads`: fetch inline review-thread IDs and comments through GraphQL.
 - `github_checks`, `github_actions_runs`: inspect PR checks and workflow runs.

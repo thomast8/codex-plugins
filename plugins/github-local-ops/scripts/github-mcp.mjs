@@ -114,6 +114,63 @@ const TOOLS = [
     })
   },
   {
+    name: "github_my_pull_requests",
+    description: "Discover open pull requests authored by the active gh account, or by an explicit author login, across accessible GitHub repositories using GraphQL.",
+    inputSchema: objectSchema({
+      cwd: repoSchema.cwd,
+      ...limitSchema,
+      repo: {
+        type: "string",
+        description: "Optional OWNER/REPO filter applied after GraphQL author discovery."
+      },
+      author: {
+        type: "string",
+        description: "Optional GitHub author login. Defaults to the active gh account through GraphQL viewer."
+      },
+      includeChecks: {
+        type: "boolean",
+        description: "Include a compact status-check summary for each PR. Defaults to false."
+      },
+      fallbackRepos: {
+        type: "array",
+        items: { type: "string" },
+        description: "Optional OWNER/REPO list to use only if GraphQL author discovery fails."
+      },
+      allowSearchFallback: {
+        type: "boolean",
+        description: "Allow gh search prs fallback if GraphQL fails. This can be incomplete for private org PRs and is disabled by default."
+      }
+    })
+  },
+  {
+    name: "github_pr_rebase_plan",
+    description: "Build a parent-first rebase order for authored or supplied pull requests, including stacked PR dependencies and optional base staleness checks.",
+    inputSchema: objectSchema({
+      cwd: repoSchema.cwd,
+      ...limitSchema,
+      repo: {
+        type: "string",
+        description: "Optional OWNER/REPO filter when discovering PRs."
+      },
+      author: {
+        type: "string",
+        description: "Optional GitHub author login when discovering PRs. Defaults to the active gh account."
+      },
+      pullRequests: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: true
+        },
+        description: "Optional PR metadata list, such as github_my_pull_requests.pullRequests. If omitted, the tool discovers authored PRs first."
+      },
+      checkStaleness: {
+        type: "boolean",
+        description: "Use GitHub compare API to mark PRs current, stale, or unknown against their actual base. Defaults to true."
+      }
+    })
+  },
+  {
     name: "github_pr_view",
     description: "Read detailed pull request metadata.",
     inputSchema: objectSchema({
@@ -730,6 +787,165 @@ function summarizePrList(pullRequests, freshness = null) {
   };
 }
 
+function summarizeAuthoredPullRequests(pullRequests, discovery) {
+  const prs = Array.isArray(pullRequests) ? pullRequests : [];
+  const repositories = [...new Set(prs.map((pr) => pr.repo).filter(Boolean))];
+  return {
+    kind: "authored_pull_request_discovery",
+    count: prs.length,
+    drafts: prs.filter((pr) => pr.isDraft).length,
+    repositories,
+    repositoryCount: repositories.length,
+    author: discovery.author || null,
+    activeAccount: discovery.activeAccount || null,
+    strategy: discovery.strategy,
+    truncated: discovery.truncated,
+    warnings: discovery.warnings?.length || 0
+  };
+}
+
+function summarizeRebasePlan(repositoryPlans, orderedPullRequests, warnings) {
+  const allItems = repositoryPlans.flatMap((plan) => plan.pullRequests);
+  return {
+    kind: "pr_rebase_plan",
+    count: allItems.length,
+    repositories: repositoryPlans.length,
+    orderedCount: orderedPullRequests.length,
+    stale: allItems.filter((item) => item.staleness?.status === "stale").length,
+    current: allItems.filter((item) => item.staleness?.status === "current").length,
+    unknown: allItems.filter((item) => item.staleness?.status === "unknown").length,
+    cycles: repositoryPlans.reduce((count, plan) => count + plan.cycles.length, 0),
+    ambiguousBases: repositoryPlans.reduce((count, plan) => count + plan.ambiguousBases.length, 0),
+    warnings: warnings.length
+  };
+}
+
+function repoNameFromValue(value) {
+  if (!value) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  return value.nameWithOwner || value.fullName || null;
+}
+
+function loginFromAuthor(value) {
+  if (!value) {
+    return null;
+  }
+  return typeof value === "string" ? value : value.login || null;
+}
+
+function requireOptionalLogin(value, name = "author") {
+  if (value == null || String(value).trim() === "") {
+    return null;
+  }
+  const text = requireNonOptionString(value, name);
+  if (!/^[A-Za-z0-9_.-]+$/.test(text)) {
+    throw new Error(`${name} must contain only letters, numbers, dots, underscores, or hyphens`);
+  }
+  return text;
+}
+
+function normalizeOptionalRepoList(value, name = "fallbackRepos") {
+  if (value == null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${name} must be an array.`);
+  }
+  return value.map((repo, index) => parseRepoName(requireNonOptionString(repo, `${name}[${index}]`)).nameWithOwner);
+}
+
+function normalizeDiscoveryPullRequest(pr, index = 0) {
+  if (!pr || typeof pr !== "object" || Array.isArray(pr)) {
+    throw new Error(`pullRequests[${index}] must be an object.`);
+  }
+  const repo = repoNameFromValue(pr.repo || pr.repository || pr.repositoryNameWithOwner);
+  const number = Number(pr.number);
+  const headRepository = repoNameFromValue(pr.headRepository || pr.headRepo || pr.headRepositoryNameWithOwner);
+  const normalizedRepo = repo ? parseRepoName(repo).nameWithOwner : null;
+  const normalizedHeadRepository = headRepository ? parseRepoName(headRepository).nameWithOwner : null;
+  return {
+    repo: normalizedRepo,
+    repository: normalizedRepo,
+    number: Number.isFinite(number) ? number : pr.number,
+    title: pr.title || null,
+    url: pr.url || null,
+    state: pr.state || null,
+    isDraft: pr.isDraft ?? null,
+    author: loginFromAuthor(pr.author) || pr.authorLogin || null,
+    baseRefName: pr.baseRefName || pr.base || null,
+    baseRefOid: pr.baseRefOid || pr.baseSha || null,
+    headRefName: pr.headRefName || pr.head || null,
+    headRepository: normalizedHeadRepository || normalizedRepo || null,
+    headRefOid: pr.headRefOid || pr.headSha || null,
+    headSha: pr.headSha || pr.headRefOid || null,
+    updatedAt: pr.updatedAt || null,
+    reviewDecision: pr.reviewDecision || null,
+    checks: pr.checks || null
+  };
+}
+
+function normalizeDiscoveryPullRequests(value) {
+  if (value == null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("pullRequests must be an array.");
+  }
+  return value.map((pr, index) => normalizeDiscoveryPullRequest(pr, index));
+}
+
+function checkSummaryFromRollup(rollup) {
+  if (!rollup) {
+    return null;
+  }
+  const contexts = rollup.contexts?.nodes || [];
+  const normalized = contexts.map((context) => {
+    if (context.__typename === "CheckRun") {
+      return {
+        type: "CheckRun",
+        name: context.name || null,
+        workflow: context.checkSuite?.workflowRun?.workflow?.name || null,
+        status: context.status || null,
+        conclusion: context.conclusion || null,
+        detailsUrl: context.detailsUrl || null,
+        startedAt: context.startedAt || null,
+        completedAt: context.completedAt || null
+      };
+    }
+    return {
+      type: "StatusContext",
+      name: context.context || null,
+      status: context.state || null,
+      conclusion: context.state || null,
+      detailsUrl: context.targetUrl || null
+    };
+  });
+  const failing = normalized.filter((context) => (
+    ["FAILURE", "ERROR", "TIMED_OUT", "ACTION_REQUIRED", "CANCELLED"].includes(context.conclusion)
+  ));
+  const pending = normalized.filter((context) => (
+    ["PENDING", "QUEUED", "IN_PROGRESS", "REQUESTED", "WAITING"].includes(context.status)
+    || context.conclusion == null
+  ));
+  return {
+    state: rollup.state || null,
+    total: rollup.contexts?.totalCount ?? normalized.length,
+    returned: normalized.length,
+    truncated: rollup.contexts?.pageInfo?.hasNextPage === true,
+    pass: normalized.filter((context) => ["SUCCESS", "NEUTRAL"].includes(context.conclusion)).length,
+    fail: failing.length,
+    pending: pending.length,
+    skipping: normalized.filter((context) => context.conclusion === "SKIPPED").length,
+    failing,
+    pendingChecks: pending,
+    contexts: normalized
+  };
+}
+
 function summarizeDiff(text, truncated, freshness = null) {
   const files = text.trim() ? text.trim().split("\n").filter(Boolean) : [];
   return {
@@ -1291,6 +1507,599 @@ async function githubPrList(input = {}) {
     abstract: summarizePrList(result.data, freshness),
     pullRequests: result.data,
     warnings: freshnessWarnings(freshness)
+  };
+}
+
+function errorSummary(error) {
+  if (!error) {
+    return "unknown error";
+  }
+  if (error instanceof Error) {
+    return error.stderr?.trim() || error.stdout?.trim() || error.message;
+  }
+  return String(error);
+}
+
+function readActiveAccount(cwd) {
+  const auth = safeRunGh(["auth", "status"], { cwd });
+  const text = outputText(auth) || "";
+  const accounts = parseGhAccounts(text);
+  return {
+    command: auth.command,
+    ok: auth.status === 0,
+    activeAccount: accounts.find((account) => account.active)?.login || null,
+    accounts,
+    status: text || null
+  };
+}
+
+function authoredPullRequestsGraphqlQuery({ explicitAuthor, includeChecks }) {
+  const subject = explicitAuthor ? "user(login: $author)" : "viewer";
+  const authorVariable = explicitAuthor ? ", $author: String!" : "";
+  const checks = includeChecks
+    ? `
+          statusCheckRollup {
+            state
+            contexts(first: 50) {
+              totalCount
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                __typename
+                ... on CheckRun {
+                  name
+                  status
+                  conclusion
+                  detailsUrl
+                  startedAt
+                  completedAt
+                  checkSuite {
+                    workflowRun {
+                      workflow { name }
+                    }
+                  }
+                }
+                ... on StatusContext {
+                  context
+                  state
+                  targetUrl
+                }
+              }
+            }
+          }`
+    : "";
+  return `query($first: Int!, $after: String${authorVariable}) {
+  subject: ${subject} {
+    login
+    pullRequests(states: OPEN, first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        title
+        url
+        state
+        isDraft
+        updatedAt
+        reviewDecision
+        baseRefName
+        baseRefOid
+        headRefName
+        headRefOid
+        author { login }
+        repository { nameWithOwner }
+        headRepository { nameWithOwner }
+        ${checks}
+      }
+    }
+  }
+  rateLimit {
+    limit
+    cost
+    remaining
+    resetAt
+    used
+  }
+}`;
+}
+
+function normalizeGraphqlPullRequest(pr, includeChecks) {
+  return normalizeDiscoveryPullRequest({
+    ...pr,
+    repo: pr.repository?.nameWithOwner || null,
+    headRepository: pr.headRepository?.nameWithOwner || null,
+    author: pr.author?.login || null,
+    checks: includeChecks ? checkSummaryFromRollup(pr.statusCheckRollup) : null
+  });
+}
+
+function graphqlVariableArgs({ query, first, after, author }) {
+  const args = ["api", "graphql", "-f", `query=${query}`, "-F", `first=${first}`];
+  if (after) {
+    args.push("-f", `after=${after}`);
+  }
+  if (author) {
+    args.push("-f", `author=${author}`);
+  }
+  return args;
+}
+
+function graphqlErrors(data) {
+  const errors = data?.errors;
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return [];
+  }
+  return errors.map((error) => error.message || JSON.stringify(error));
+}
+
+function filterPullRequestsByRepo(pullRequests, repo) {
+  if (!repo) {
+    return pullRequests;
+  }
+  const wanted = repo.toLowerCase();
+  return pullRequests.filter((pr) => String(pr.repo || "").toLowerCase() === wanted);
+}
+
+function searchReliabilityWarnings(type, query, resultCount = null) {
+  const warnings = [];
+  if (type === "prs") {
+    const authorScoped = /\bauthor:([^\s]+)/i.test(query);
+    const openScoped = /\bis:(?:pr\s+)?open\b/i.test(query) || /\bstate:open\b/i.test(query);
+    if (authorScoped || openScoped || resultCount === 0) {
+      warnings.push("gh search prs is search-index backed and can return false zeroes for private org authored PRs; use github_my_pull_requests for authored PR discovery because it uses GraphQL viewer/user pullRequests and includes drafts.");
+    } else {
+      warnings.push("gh search prs is search-index backed; use github_my_pull_requests when private org authored PR completeness matters.");
+    }
+  }
+  if (type === "repos") {
+    warnings.push("gh search repos is search-index backed and is not a complete accessible-repository enumeration surface for private org automation.");
+  }
+  return warnings;
+}
+
+async function readAuthoredPullRequestsGraphql({ cwd, author, limit, repo, includeChecks }) {
+  const query = authoredPullRequestsGraphqlQuery({ explicitAuthor: Boolean(author), includeChecks });
+  const pullRequests = [];
+  const commands = [];
+  let cursor = null;
+  let totalCount = null;
+  let subjectLogin = null;
+  let rateLimit = null;
+  let hasNextPage = false;
+  let pageCount = 0;
+
+  while (pullRequests.length < limit) {
+    const first = Math.min(100, limit - pullRequests.length);
+    const result = runGh(graphqlVariableArgs({ query, first, after: cursor, author }), { cwd, json: true });
+    commands.push(result.command);
+    const errors = graphqlErrors(result.data);
+    if (errors.length > 0) {
+      throw new Error(`GraphQL authored PR discovery failed: ${errors.join("; ")}`);
+    }
+    const subject = result.data?.data?.subject;
+    if (!subject) {
+      throw new Error(author ? `GitHub user ${author} was not found or is not visible to the active account.` : "GraphQL viewer was not returned.");
+    }
+    const connection = subject.pullRequests;
+    subjectLogin = subject.login || subjectLogin;
+    totalCount = connection?.totalCount ?? totalCount;
+    rateLimit = result.data?.data?.rateLimit || rateLimit;
+    const nodes = connection?.nodes || [];
+    pullRequests.push(...nodes.map((pr) => normalizeGraphqlPullRequest(pr, includeChecks)));
+    pageCount += 1;
+    hasNextPage = connection?.pageInfo?.hasNextPage === true;
+    cursor = connection?.pageInfo?.endCursor || null;
+    if (!hasNextPage || !cursor) {
+      break;
+    }
+  }
+
+  const warnings = [];
+  if (hasNextPage || (totalCount != null && totalCount > pullRequests.length)) {
+    warnings.push(`GraphQL result truncated at limit ${limit}; total authored open PRs reported as ${totalCount}.`);
+  }
+  if (repo && hasNextPage) {
+    warnings.push("repo filter is applied after GraphQL author discovery; increase limit if filtered results look incomplete.");
+  }
+  if (includeChecks && pullRequests.some((pr) => pr.checks?.truncated)) {
+    warnings.push("One or more PR check summaries are truncated at 50 check/status contexts.");
+  }
+
+  return {
+    strategy: author ? "graphql_user_pull_requests" : "graphql_viewer_pull_requests",
+    subjectLogin,
+    totalCount,
+    pageCount,
+    commands,
+    pullRequests: filterPullRequestsByRepo(pullRequests, repo),
+    unfilteredCount: pullRequests.length,
+    truncated: hasNextPage || (totalCount != null && totalCount > pullRequests.length),
+    rateLimit,
+    warnings
+  };
+}
+
+async function readAuthoredPullRequestsFromRepos({ cwd, author, repos, limit, includeChecks }) {
+  const pullRequests = [];
+  const commands = [];
+  const warnings = [];
+  for (const repo of repos) {
+    const list = await githubPrList({ cwd, repo, state: "open", limit: 100 });
+    commands.push(list.command);
+    const repoMatches = list.pullRequests
+      .filter((pr) => loginFromAuthor(pr.author) === author)
+      .map((pr) => normalizeDiscoveryPullRequest({
+        ...pr,
+        repo,
+        checks: includeChecks ? readPrChecks(cwd, repo, pr.number).summary : null
+      }));
+    pullRequests.push(...repoMatches);
+    warnings.push(...list.warnings);
+    if (list.pullRequests.length >= 100) {
+      warnings.push(`Repo fallback for ${repo} reached the per-repo limit of 100 open PRs.`);
+    }
+    if (pullRequests.length >= limit) {
+      warnings.push(`Repo fallback truncated at limit ${limit}.`);
+      break;
+    }
+  }
+  return {
+    strategy: "repo_list_fallback",
+    commands,
+    pullRequests: pullRequests.slice(0, limit),
+    truncated: pullRequests.length > limit,
+    warnings
+  };
+}
+
+async function readAuthoredPullRequestsFromSearch({ cwd, author, repo, limit }) {
+  const query = `is:pr is:open author:${author} archived:false`;
+  const args = ["search", "prs", query, "--limit", limit, "--json", "number,title,state,repository,author,updatedAt,url,isDraft"];
+  if (repo) {
+    args.push("--repo", repo);
+  }
+  const result = runGh(args, { cwd, json: true });
+  return {
+    strategy: "gh_search_prs_fallback",
+    commands: [result.command],
+    pullRequests: result.data.map((pr, index) => normalizeDiscoveryPullRequest(pr, index)),
+    truncated: result.data.length >= limit,
+    warnings: [
+      "gh search prs fallback is known incomplete for private org authored PR discovery and does not return base/head metadata required for rebase automation."
+    ]
+  };
+}
+
+async function githubMyPullRequests(input = {}) {
+  const cwd = cwdFrom(input);
+  const limit = limitValue(input.limit ?? 100);
+  const includeChecks = input.includeChecks === true;
+  const repo = input.repo ? parseRepoName(input.repo).nameWithOwner : null;
+  const requestedAuthor = requireOptionalLogin(input.author);
+  const fallbackRepos = normalizeOptionalRepoList(input.fallbackRepos);
+  const auth = readActiveAccount(cwd);
+  const warnings = auth.ok ? [] : ["gh authentication status could not be inspected."];
+  let discovery;
+
+  try {
+    discovery = await readAuthoredPullRequestsGraphql({
+      cwd,
+      author: requestedAuthor,
+      limit,
+      repo,
+      includeChecks
+    });
+  } catch (error) {
+    warnings.push(errorSummary(error));
+    const fallbackAuthor = requestedAuthor || auth.activeAccount;
+    if (!fallbackAuthor) {
+      throw error;
+    }
+    if (fallbackRepos.length > 0) {
+      discovery = await readAuthoredPullRequestsFromRepos({
+        cwd,
+        author: fallbackAuthor,
+        repos: repo ? fallbackRepos.filter((candidate) => candidate.toLowerCase() === repo.toLowerCase()) : fallbackRepos,
+        limit,
+        includeChecks
+      });
+      discovery.subjectLogin = fallbackAuthor;
+    } else if (input.allowSearchFallback === true) {
+      discovery = await readAuthoredPullRequestsFromSearch({ cwd, author: fallbackAuthor, repo, limit });
+      discovery.subjectLogin = fallbackAuthor;
+    } else {
+      throw error;
+    }
+  }
+
+  const author = discovery.subjectLogin || requestedAuthor || auth.activeAccount || null;
+  const allWarnings = [
+    ...warnings,
+    ...discovery.warnings
+  ];
+  const evidence = {
+    activeAccount: auth.activeAccount || (requestedAuthor ? auth.activeAccount : discovery.subjectLogin) || null,
+    author,
+    strategy: discovery.strategy,
+    commands: discovery.commands,
+    pageCount: discovery.pageCount || null,
+    totalCount: discovery.totalCount ?? null,
+    returnedCount: discovery.pullRequests.length,
+    unfilteredCount: discovery.unfilteredCount ?? discovery.pullRequests.length,
+    repoFilter: repo,
+    includeChecks,
+    truncated: discovery.truncated === true,
+    rateLimit: discovery.rateLimit || null,
+    auth
+  };
+  return {
+    command: discovery.commands?.[0] || null,
+    abstract: summarizeAuthoredPullRequests(discovery.pullRequests, {
+      ...evidence,
+      warnings: allWarnings
+    }),
+    discovery: evidence,
+    pullRequests: discovery.pullRequests,
+    warnings: allWarnings
+  };
+}
+
+function pullRequestKey(pr) {
+  return `${pr.repo}#${pr.number}`;
+}
+
+function compactPullRequestRef(pr) {
+  return {
+    repo: pr.repo || null,
+    number: pr.number ?? null,
+    title: pr.title || null,
+    url: pr.url || null,
+    baseRefName: pr.baseRefName || null,
+    headRefName: pr.headRefName || null,
+    headRepository: pr.headRepository || null,
+    headSha: pr.headSha || pr.headRefOid || null
+  };
+}
+
+function compareHeadSpec(pr) {
+  if (!pr.headRefName) {
+    return null;
+  }
+  if (!pr.headRepository || !pr.repo || pr.headRepository.toLowerCase() === pr.repo.toLowerCase()) {
+    return pr.headRefName;
+  }
+  const headRepo = parseRepoName(pr.headRepository);
+  return `${headRepo.owner}:${pr.headRefName}`;
+}
+
+function compareStatusToStaleness(status) {
+  if (status === "ahead" || status === "identical") {
+    return "current";
+  }
+  if (status === "behind" || status === "diverged") {
+    return "stale";
+  }
+  return "unknown";
+}
+
+function readPullRequestStaleness(cwd, pr) {
+  if (!pr.repo || !pr.baseRefName || !pr.headRefName) {
+    return {
+      status: "unknown",
+      reason: "missing repo, baseRefName, or headRefName"
+    };
+  }
+  const headSpec = compareHeadSpec(pr);
+  if (!headSpec) {
+    return {
+      status: "unknown",
+      reason: "missing head ref"
+    };
+  }
+  const endpoint = `repos/${pr.repo}/compare/${encodeURIComponent(pr.baseRefName)}...${encodeURIComponent(headSpec)}`;
+  const result = safeRunGh([
+    "api",
+    endpoint,
+    "--jq",
+    "{status: .status, aheadBy: .ahead_by, behindBy: .behind_by, baseCommit: .base_commit.sha, mergeBaseCommit: .merge_base_commit.sha}"
+  ], { cwd, json: true });
+  if (result.status !== 0 || !result.data) {
+    return {
+      status: "unknown",
+      reason: result.stderr?.trim() || result.stdout?.trim() || "compare API failed",
+      command: result.command,
+      ghStatus: result.status
+    };
+  }
+  const compareStatus = result.data.status || null;
+  return {
+    status: compareStatusToStaleness(compareStatus),
+    compareStatus,
+    aheadBy: result.data.aheadBy ?? null,
+    behindBy: result.data.behindBy ?? null,
+    baseCommit: result.data.baseCommit || null,
+    mergeBaseCommit: result.data.mergeBaseCommit || null,
+    command: result.command
+  };
+}
+
+function buildRepositoryRebasePlan(repository, pullRequests, stalenessByKey) {
+  const byHead = new Map();
+  const originalIndex = new Map();
+  for (const [index, pr] of pullRequests.entries()) {
+    originalIndex.set(pullRequestKey(pr), index);
+    if (!pr.headRefName) {
+      continue;
+    }
+    const current = byHead.get(pr.headRefName) || [];
+    current.push(pr);
+    byHead.set(pr.headRefName, current);
+  }
+
+  const dependenciesByKey = new Map();
+  const childrenByKey = new Map();
+  const ambiguousBases = [];
+  const externalBases = [];
+  const duplicateHeads = [...byHead.entries()]
+    .filter(([, prs]) => prs.length > 1)
+    .map(([headRefName, prs]) => ({
+      headRefName,
+      pullRequests: prs.map(compactPullRequestRef)
+    }));
+
+  for (const pr of pullRequests) {
+    const key = pullRequestKey(pr);
+    dependenciesByKey.set(key, new Set());
+    childrenByKey.set(key, new Set());
+  }
+
+  for (const pr of pullRequests) {
+    const key = pullRequestKey(pr);
+    const candidates = pr.baseRefName ? byHead.get(pr.baseRefName) || [] : [];
+    if (candidates.length === 1) {
+      const parent = candidates[0];
+      const parentKey = pullRequestKey(parent);
+      dependenciesByKey.get(key).add(parentKey);
+      childrenByKey.get(parentKey).add(key);
+    } else if (candidates.length > 1) {
+      ambiguousBases.push({
+        pullRequest: compactPullRequestRef(pr),
+        baseRefName: pr.baseRefName,
+        candidates: candidates.map(compactPullRequestRef)
+      });
+    } else if (pr.baseRefName) {
+      externalBases.push({
+        pullRequest: compactPullRequestRef(pr),
+        baseRefName: pr.baseRefName
+      });
+    }
+  }
+
+  const keyToPr = new Map(pullRequests.map((pr) => [pullRequestKey(pr), pr]));
+  const indegree = new Map([...dependenciesByKey.entries()].map(([key, deps]) => [key, deps.size]));
+  const queue = [...indegree.entries()]
+    .filter(([, count]) => count === 0)
+    .map(([key]) => key)
+    .sort((left, right) => originalIndex.get(left) - originalIndex.get(right));
+  const orderedKeys = [];
+
+  while (queue.length > 0) {
+    const key = queue.shift();
+    orderedKeys.push(key);
+    const children = [...(childrenByKey.get(key) || [])]
+      .sort((left, right) => originalIndex.get(left) - originalIndex.get(right));
+    for (const child of children) {
+      indegree.set(child, indegree.get(child) - 1);
+      if (indegree.get(child) === 0) {
+        queue.push(child);
+      }
+    }
+    queue.sort((left, right) => originalIndex.get(left) - originalIndex.get(right));
+  }
+
+  const cycleKeys = [...indegree.entries()]
+    .filter(([key, count]) => count > 0 && !orderedKeys.includes(key))
+    .map(([key]) => key);
+  const cycles = cycleKeys.map((key) => ({
+    pullRequest: compactPullRequestRef(keyToPr.get(key)),
+    dependsOn: [...(dependenciesByKey.get(key) || [])].map((parentKey) => compactPullRequestRef(keyToPr.get(parentKey)))
+  }));
+  const finalKeys = [...orderedKeys, ...cycleKeys];
+  const ordered = finalKeys.map((key, index) => {
+    const pr = keyToPr.get(key);
+    return {
+      order: index + 1,
+      key,
+      ...compactPullRequestRef(pr),
+      isDraft: pr.isDraft ?? null,
+      author: pr.author || null,
+      reviewDecision: pr.reviewDecision || null,
+      updatedAt: pr.updatedAt || null,
+      dependsOn: [...(dependenciesByKey.get(key) || [])].map((parentKey) => compactPullRequestRef(keyToPr.get(parentKey))),
+      children: [...(childrenByKey.get(key) || [])].map((childKey) => compactPullRequestRef(keyToPr.get(childKey))),
+      staleness: stalenessByKey.get(key) || { status: "unknown", reason: "staleness check disabled" }
+    };
+  });
+
+  return {
+    repository,
+    pullRequests: ordered,
+    dependencies: ordered
+      .filter((item) => item.dependsOn.length > 0)
+      .map((item) => ({
+        pullRequest: compactPullRequestRef(item),
+        dependsOn: item.dependsOn,
+        reason: "baseRefName matches another PR headRefName"
+      })),
+    externalBases,
+    ambiguousBases,
+    duplicateHeads,
+    cycles
+  };
+}
+
+async function githubPrRebasePlan(input = {}) {
+  const cwd = cwdFrom(input);
+  const repo = input.repo ? parseRepoName(input.repo).nameWithOwner : null;
+  const checkStaleness = input.checkStaleness !== false;
+  const warnings = [];
+  let discovery = null;
+  let pullRequests = normalizeDiscoveryPullRequests(input.pullRequests);
+  if (pullRequests.length === 0 && input.pullRequests == null) {
+    discovery = await githubMyPullRequests({
+      cwd,
+      repo,
+      author: input.author,
+      limit: input.limit ?? 100,
+      includeChecks: false
+    });
+    pullRequests = discovery.pullRequests;
+    warnings.push(...discovery.warnings);
+  }
+  if (repo) {
+    pullRequests = filterPullRequestsByRepo(pullRequests, repo);
+  }
+
+  for (const [index, pr] of pullRequests.entries()) {
+    if (!pr.repo || !pr.number) {
+      throw new Error(`pullRequests[${index}] must include repo and number.`);
+    }
+    if (!pr.baseRefName || !pr.headRefName) {
+      warnings.push(`PR ${pr.repo}#${pr.number} is missing baseRefName or headRefName; dependency and staleness evidence may be incomplete.`);
+    }
+  }
+
+  const stalenessByKey = new Map();
+  if (checkStaleness) {
+    for (const pr of pullRequests) {
+      stalenessByKey.set(pullRequestKey(pr), readPullRequestStaleness(cwd, pr));
+    }
+  }
+
+  const groups = new Map();
+  for (const pr of pullRequests) {
+    const values = groups.get(pr.repo) || [];
+    values.push(pr);
+    groups.set(pr.repo, values);
+  }
+  const repositoryPlans = [...groups.entries()].map(([repository, prs]) => (
+    buildRepositoryRebasePlan(repository, prs, stalenessByKey)
+  ));
+  const orderedPullRequests = repositoryPlans.flatMap((plan) => (
+    plan.pullRequests.map((pr) => ({ ...pr, repository: plan.repository }))
+  ));
+  if (repositoryPlans.some((plan) => plan.cycles.length > 0)) {
+    warnings.push("One or more stacked PR dependency cycles were detected.");
+  }
+  if (repositoryPlans.some((plan) => plan.ambiguousBases.length > 0)) {
+    warnings.push("One or more PR bases match multiple PR head branches in the same repo.");
+  }
+
+  return {
+    abstract: summarizeRebasePlan(repositoryPlans, orderedPullRequests, warnings),
+    discovery: discovery?.discovery || null,
+    repositories: repositoryPlans,
+    orderedPullRequests,
+    warnings
   };
 }
 
@@ -1871,11 +2680,21 @@ async function githubSearch(input = {}) {
     repos: "fullName,description,updatedAt,url,visibility"
   }[type];
   const result = runGh([...base, "--json", jsonFields], { json: true });
+  const warnings = [
+    ...search.warnings,
+    ...searchReliabilityWarnings(type, query, Array.isArray(result.data) ? result.data.length : null)
+  ];
   return {
     command: result.command,
+    search: {
+      strategy: `gh_search_${type}`,
+      normalizedQuery: query,
+      repo: search.repo || null,
+      owner: input.owner || null
+    },
     abstract: summarizeList(`search_${type}`, result.data, null),
     results: result.data,
-    warnings: search.warnings
+    warnings
   };
 }
 
@@ -2328,6 +3147,8 @@ const HANDLERS = {
   github_current_context: githubCurrentContext,
   github_repo_view: githubRepoView,
   github_pr_list: githubPrList,
+  github_my_pull_requests: githubMyPullRequests,
+  github_pr_rebase_plan: githubPrRebasePlan,
   github_pr_view: githubPrView,
   github_pr_diff: githubPrDiff,
   github_pr_review_threads: githubPrReviewThreads,
@@ -2459,6 +3280,27 @@ async function runSelfTest() {
       }
     ]
   }));
+  const rebasePlan = await githubPrRebasePlan({
+    checkStaleness: false,
+    pullRequests: [
+      {
+        repo: "owner/repo",
+        number: 1,
+        title: "Base PR",
+        baseRefName: "main",
+        headRefName: "feature/base",
+        headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        repo: "owner/repo",
+        number: 2,
+        title: "Child PR",
+        baseRefName: "feature/base",
+        headRefName: "feature/child",
+        headRefOid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ]
+  });
   const releasePreview = await githubMutationPreview({
     operation: "create_release",
     payload: {
@@ -2494,6 +3336,7 @@ async function runSelfTest() {
       && optionWorkflowRejected.ok
       && optionReleaseRejected.ok
       && handoffInvalidReplyRejected.ok
+      && rebasePlan.orderedPullRequests.map((pr) => pr.number).join(",") === "1,2"
       && releasePreview.command.args.includes("--draft"),
     server: initialize.result.serverInfo,
     toolCount: names.length,
@@ -2506,6 +3349,7 @@ async function runSelfTest() {
       optionWorkflowRejected,
       optionReleaseRejected,
       handoffInvalidReplyRejected,
+      rebasePlanOrdersParentFirst: rebasePlan.orderedPullRequests.map((pr) => pr.number),
       releaseDefaultsToDraft: releasePreview.command.args.includes("--draft"),
       missingTokenRejected: noToken,
       mismatchedTokenRejected: mismatch,
