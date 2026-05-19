@@ -5,20 +5,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const defaultConfigRoot = path.join(
-  os.homedir(),
-  "Library",
-  "Mobile Documents",
-  "com~apple~CloudDocs",
-  "Codex-config"
-);
+const marketplaceName = process.env.CODEX_MARKETPLACE_NAME?.trim() || "codex-plugins";
+const defaultConfigRoot = path.join(os.homedir(), ".Codex", "marketplaces", marketplaceName);
 const configRoot = process.env.CODEX_CONFIG_ROOT
   ? path.resolve(process.env.CODEX_CONFIG_ROOT)
   : defaultConfigRoot;
 const configPath = process.env.CODEX_CONFIG_FILE
   ? path.resolve(process.env.CODEX_CONFIG_FILE)
   : path.join(os.homedir(), ".Codex", "config.toml");
-const marketplaceName = process.env.CODEX_MARKETPLACE_NAME?.trim() || "codex-plugins";
+const skillsRoot = process.env.CODEX_SKILLS_ROOT
+  ? path.resolve(process.env.CODEX_SKILLS_ROOT)
+  : path.join(os.homedir(), ".Codex", "skills");
 const marketplaceDisplayName =
   process.env.CODEX_MARKETPLACE_DISPLAY_NAME?.trim() || "Thomas Codex Plugins";
 const staleMarketplaceNames = (
@@ -33,8 +30,31 @@ const selectedPluginNames = (
   .split(",")
   .map((name) => name.trim())
   .filter((name) => name !== "");
+const installSkills = process.env.CODEX_INSTALL_SKILLS !== "false";
+const selectedSkillNames = (
+  process.env.CODEX_SKILLS ?? process.env.CODEX_SKILL_NAME ?? ""
+)
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name !== "");
+const installMcpServers = process.env.CODEX_INSTALL_MCPS !== "false";
+const selectedMcpServerNames = (process.env.CODEX_MCPS ?? "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter((name) => name !== "");
 const marketplacePath = path.join(configRoot, ".agents", "plugins", "marketplace.json");
 const repoMarketplacePath = path.join(repoRoot, ".agents", "plugins", "marketplace.json");
+const repoSkillsRoot = path.join(repoRoot, "skills");
+const safeMcpServers = {
+  gitnexus: {
+    command: "gitnexus",
+    args: ["mcp"],
+  },
+  "mcp-debugger": {
+    command: "npx",
+    args: ["-y", "@debugmcp/mcp-debugger"],
+  },
+};
 
 function ensureExists(filePath) {
   if (!fs.existsSync(filePath)) {
@@ -132,6 +152,48 @@ function pluginsToInstall() {
   return names;
 }
 
+function availableSkillNames() {
+  if (!fs.existsSync(repoSkillsRoot)) {
+    return [];
+  }
+  return fs
+    .readdirSync(repoSkillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name)
+    .filter((name) => fs.existsSync(path.join(repoSkillsRoot, name, "SKILL.md")))
+    .sort();
+}
+
+function skillsToInstall() {
+  if (!installSkills) {
+    return [];
+  }
+  const names = [
+    ...new Set(selectedSkillNames.length > 0 ? selectedSkillNames : availableSkillNames()),
+  ].map(assertPluginName);
+  for (const name of names) {
+    if (!fs.existsSync(path.join(repoSkillsRoot, name, "SKILL.md"))) {
+      throw new Error(`${repoSkillsRoot} does not contain skill ${name}.`);
+    }
+  }
+  return names;
+}
+
+function mcpServersToInstall() {
+  if (!installMcpServers) {
+    return [];
+  }
+  const names = selectedMcpServerNames.length > 0
+    ? [...new Set(selectedMcpServerNames)]
+    : Object.keys(safeMcpServers);
+  for (const name of names) {
+    if (!Object.hasOwn(safeMcpServers, name)) {
+      throw new Error(`Unknown safe MCP server ${JSON.stringify(name)}.`);
+    }
+  }
+  return names;
+}
+
 function pluginKey(pluginName) {
   return `${pluginName}@${marketplaceName}`;
 }
@@ -144,6 +206,10 @@ function stalePluginKeys(pluginName) {
 
 function pluginSource(pluginName) {
   return resolveInside(path.join(repoRoot, "plugins"), pluginName, "Plugin source");
+}
+
+function skillSource(skillName) {
+  return resolveInside(repoSkillsRoot, skillName, "Skill source");
 }
 
 function ensurePluginRoot(pluginName) {
@@ -165,8 +231,35 @@ function ensurePluginRoot(pluginName) {
   return root;
 }
 
+function ensureSkillRoot(skillName) {
+  const root = skillSource(skillName);
+  ensureExists(root);
+  const rootLinkStat = fs.lstatSync(root);
+  if (rootLinkStat.isSymbolicLink()) {
+    throw new Error(`${root} must not be a symlink.`);
+  }
+  if (!rootLinkStat.isDirectory()) {
+    throw new Error(`${root} must be a directory.`);
+  }
+  const skillsRootRealPath = fs.realpathSync(repoSkillsRoot);
+  const rootRealPath = fs.realpathSync(root);
+  if (!pathInside(skillsRootRealPath, rootRealPath)) {
+    throw new Error(`${root} must stay inside ${repoSkillsRoot}.`);
+  }
+  const skillPath = path.join(root, "SKILL.md");
+  ensureExists(skillPath);
+  if (fs.lstatSync(skillPath).isSymbolicLink()) {
+    throw new Error(`${skillPath} must not be a symlink.`);
+  }
+  return root;
+}
+
 function pluginLink(pluginName) {
   return resolveInside(path.join(configRoot, "plugins"), pluginName, "Plugin link");
+}
+
+function skillLink(skillName) {
+  return resolveInside(skillsRoot, skillName, "Skill link");
 }
 
 function repoMarketplaceEntry(pluginName) {
@@ -267,12 +360,38 @@ function inspectPluginLink(pluginName) {
   throw new Error(`${link} already exists and does not point to ${source}`);
 }
 
+function inspectSkillLink(skillName) {
+  const source = skillSource(skillName);
+  const link = skillLink(skillName);
+
+  if (!fs.existsSync(link)) {
+    return "created";
+  }
+
+  const stat = fs.lstatSync(link);
+  if (stat.isSymbolicLink() && fs.realpathSync(link) === fs.realpathSync(source)) {
+    return "already-present";
+  }
+
+  throw new Error(`${link} already exists and does not point to ${source}`);
+}
+
 function createPluginLink(pluginName, status) {
   if (status !== "created") {
     return;
   }
   const source = pluginSource(pluginName);
   const link = pluginLink(pluginName);
+  fs.mkdirSync(path.dirname(link), { recursive: true });
+  fs.symlinkSync(source, link, "dir");
+}
+
+function createSkillLink(skillName, status) {
+  if (status !== "created") {
+    return;
+  }
+  const source = skillSource(skillName);
+  const link = skillLink(skillName);
   fs.mkdirSync(path.dirname(link), { recursive: true });
   fs.symlinkSync(source, link, "dir");
 }
@@ -311,6 +430,26 @@ function ensureMarketplaceEntries(pluginNames) {
   }));
 }
 
+function upsertMcpServers(contents, mcpServerNames) {
+  let updated = contents;
+  for (const name of mcpServerNames) {
+    const server = safeMcpServers[name];
+    updated = upsertTomlKey(
+      updated,
+      `mcp_servers.${name}`,
+      "command",
+      tomlString(server.command)
+    );
+    updated = upsertTomlKey(
+      updated,
+      `mcp_servers.${name}`,
+      "args",
+      JSON.stringify(server.args)
+    );
+  }
+  return updated;
+}
+
 ensureExists(repoMarketplacePath);
 ensureExists(configPath);
 
@@ -318,14 +457,26 @@ const pluginNames = pluginsToInstall();
 for (const pluginName of pluginNames) {
   ensurePluginShape(pluginName);
 }
+const skillNames = skillsToInstall();
+for (const skillName of skillNames) {
+  ensureSkillRoot(skillName);
+}
+const mcpServerNames = mcpServersToInstall();
 
 const linkStatuses = pluginNames.map((pluginName) => ({
   pluginName,
   status: inspectPluginLink(pluginName)
 }));
+const skillLinkStatuses = skillNames.map((skillName) => ({
+  skillName,
+  status: inspectSkillLink(skillName)
+}));
 const marketplaceStatuses = ensureMarketplaceEntries(pluginNames);
 for (const { pluginName, status } of linkStatuses) {
   createPluginLink(pluginName, status);
+}
+for (const { skillName, status } of skillLinkStatuses) {
+  createSkillLink(skillName, status);
 }
 const original = fs.readFileSync(configPath, "utf8");
 let updated = original;
@@ -358,9 +509,10 @@ for (const pluginName of pluginNames) {
     );
   }
 }
+updated = upsertMcpServers(updated, mcpServerNames);
 
 if (updated === original) {
-  console.log("Selected marketplace plugins are already registered in Codex.");
+  console.log("Codex config already has the selected marketplace plugins and MCP servers.");
 } else {
   if (!fs.statSync(configPath).isFile()) {
     throw new Error(`${configPath} is not a regular file.`);
@@ -382,8 +534,17 @@ for (const { pluginName, status } of linkStatuses) {
 for (const { pluginName, status } of marketplaceStatuses) {
   console.log(`Marketplace entry: ${marketplacePath} ${pluginName} (${status})`);
 }
+for (const { skillName, status } of skillLinkStatuses) {
+  console.log(`Skill link: ${skillLink(skillName)} (${status})`);
+}
 console.log(`Marketplace: ${marketplaceName}`);
 console.log(`Plugins: ${pluginNames.map(pluginKey).join(", ")}`);
+if (skillNames.length > 0) {
+  console.log(`Skills: ${skillNames.join(", ")}`);
+}
+if (mcpServerNames.length > 0) {
+  console.log(`MCP servers: ${mcpServerNames.join(", ")}`);
+}
 const disabledStaleKeys = pluginNames.flatMap(stalePluginKeys);
 if (disabledStaleKeys.length > 0) {
   console.log(`Disabled stale plugin entries: ${disabledStaleKeys.join(", ")}`);

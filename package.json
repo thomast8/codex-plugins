@@ -23,12 +23,14 @@
     "generate:mcp": "node scripts/generate-mcp-manifest.mjs",
     "verify:manifests": "jq empty .agents/plugins/marketplace.json plugins/azure-devops/.codex-plugin/plugin.json plugins/azure-devops/.mcp.json plugins/github-local-ops/.codex-plugin/plugin.json plugins/github-local-ops/.mcp.json plugins/thomas-codex-workflows/.codex-plugin/plugin.json plugins/thomas-codex-workflows/hooks/hooks.json",
     "verify:installer": "node --check scripts/install-local.mjs",
+    "verify:skills": "node scripts/verify-skills.mjs",
+    "public-safety": "node scripts/public-safety-scan.mjs",
     "workflows:syntax": "node scripts/verify-workflows.mjs",
     "github:syntax": "node --check plugins/github-local-ops/scripts/github-mcp.mjs && node --check plugins/github-local-ops/scripts/github-mcp-contract.mjs",
     "github:self-test": "node plugins/github-local-ops/scripts/github-mcp.mjs --self-test",
     "github:contract": "node plugins/github-local-ops/scripts/github-mcp-contract.mjs",
     "github:test": "npm run github:syntax && npm run github:self-test && npm run github:contract",
-    "verify:marketplace": "npm run verify:manifests && npm run verify:installer && npm run workflows:syntax && npm run lint && npm test && npm run github:test"
+    "verify:marketplace": "npm run verify:manifests && npm run verify:installer && npm run verify:skills && npm run public-safety && npm run workflows:syntax && npm run lint && npm test && npm run github:test"
   },
   "engines": {
     "node": ">=22.13.0"

@@ -1,4 +1,7 @@
 node_modules/
+.codex-marketplace-install.json
+__pycache__/
+*.pyc
 dist/
 !plugins/azure-devops/dist/
 plugins/azure-devops/dist/*
@@ -8,6 +11,7 @@ coverage/
 .DS_Store
 .claude/
 .gitnexus/
+skills/.system/
 .env
 .env.*
 !.env.example

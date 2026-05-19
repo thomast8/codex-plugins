@@ -19,6 +19,7 @@ describe("local installer", () => {
   const ghAuthSwitchPath = path.join(workflowsPluginSource, "hooks", "gh-auth-switch.sh");
   const repoSafetyPath = path.join(workflowsPluginSource, "hooks", "repo-safety.sh");
   const worktreeCreatePath = path.join(workflowsPluginSource, "hooks", "worktree-create.sh");
+  const reviewCodeSkillSource = path.join(repoRoot, "skills", "review-code");
 
   function createConfig(configPath: string): void {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -195,6 +196,9 @@ describe("local installer", () => {
         "thomas-codex-workflows@codex-plugins",
       ].join(", ")
     );
+    expect(stdout).toContain("Skills: ");
+    expect(stdout).toContain("review-code");
+    expect(stdout).toContain("MCP servers: gitnexus, mcp-debugger");
     expect(stdout).toContain(
       [
         "Disabled stale plugin entries: azure-devops@codex-azure-devops-plugin",
@@ -260,6 +264,9 @@ describe("local installer", () => {
     ).toBe(1);
     expect(updatedConfig).toContain("[mcp_servers.gitnexus]");
     expect(updatedConfig).toContain('command = "gitnexus"');
+    expect(updatedConfig).toContain("[mcp_servers.mcp-debugger]");
+    expect(updatedConfig).toContain('command = "npx"');
+    expect(updatedConfig).toContain('args = ["-y","@debugmcp/mcp-debugger"]');
 
     const pluginLink = path.join(configRoot, "plugins", "azure-devops");
     expect(fs.lstatSync(pluginLink).isSymbolicLink()).toBe(true);
@@ -273,6 +280,11 @@ describe("local installer", () => {
     expect(fs.lstatSync(workflowsPluginLink).isSymbolicLink()).toBe(true);
     expect(fs.realpathSync(workflowsPluginLink)).toBe(
       fs.realpathSync(workflowsPluginSource)
+    );
+    const reviewCodeSkillLink = path.join(homeDir, ".Codex", "skills", "review-code");
+    expect(fs.lstatSync(reviewCodeSkillLink).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(reviewCodeSkillLink)).toBe(
+      fs.realpathSync(reviewCodeSkillSource)
     );
 
     const marketplace = JSON.parse(
@@ -343,7 +355,7 @@ describe("local installer", () => {
     expect(fs.statSync(backupPath).mode & 0o777).toBe(0o600);
     const secondStdout = await runInstaller(env);
     expect(secondStdout).toContain(
-      "Selected marketplace plugins are already registered in Codex."
+      "Codex config already has the selected marketplace plugins and MCP servers."
     );
     expect(configBackups(configPath)).toHaveLength(firstBackups.length);
     expect(fs.readFileSync(configPath, "utf8")).toBe(updatedConfig);
@@ -351,13 +363,7 @@ describe("local installer", () => {
 
   it("uses the default Codex config paths under HOME", async () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ado-install-default-home-"));
-    const configRoot = path.join(
-      homeDir,
-      "Library",
-      "Mobile Documents",
-      "com~apple~CloudDocs",
-      "Codex-config"
-    );
+    const configRoot = path.join(homeDir, ".Codex", "marketplaces", "codex-plugins");
     const configPath = path.join(homeDir, ".Codex", "config.toml");
     createConfig(configPath);
 

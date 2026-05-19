@@ -45,7 +45,7 @@ fi
 # Short delay lets the original analyze finish before we re-run with embeddings.
 # Per-repo lock prevents two repair jobs colliding on the same LadybugDB file.
 # Log repair events so wipes are traceable.
-LOG="${HOME}/.Codex/log/gitnexus-embedding-guard.log"
+LOG="${CODEX_LOG_DIR:-${HOME}/.Codex/log}/gitnexus-embedding-guard.log"
 mkdir -p "$(dirname "$LOG")"
 LOCK=/tmp/gitnexus-repair-$(printf '%s' "$REPO_PATH" | shasum | cut -c1-12).lock
 (

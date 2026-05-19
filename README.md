@@ -3,6 +3,7 @@
 Personal Codex marketplace repo for Thomas's plugins. It currently bundles Azure DevOps, GitHub Local Ops, and Thomas Codex Workflows.
 
 The marketplace root is `thomast8/codex-plugins`. The repo-level marketplace file at `.agents/plugins/marketplace.json` points Codex at plugin packages under `plugins/`.
+Standalone personal skills live under `skills/` and are installed as top-level skills so their names stay stable across machines.
 
 Requires Node.js 22.13.0 or newer.
 
@@ -26,6 +27,12 @@ plugins/
   thomas-codex-workflows/
     .codex-plugin/plugin.json
     hooks/
+skills/
+  review-code/
+  worktree/
+  ...
+archived-skills/
+docs/codex-surface-inventory.md
 ```
 
 ## Add To Codex
@@ -43,6 +50,12 @@ Codex discovers the marketplace from `.agents/plugins/marketplace.json`; bundled
 - `plugins/azure-devops`: Azure Boards and Azure Repos tools with local stdio support and hosted Microsoft Entra OAuth support.
 - `plugins/github-local-ops`: local GitHub workflows for repos, PRs, issues, Actions, releases, and publishing, backed by the GitHub CLI and git.
 - `plugins/thomas-codex-workflows`: personal repo-safety hooks for GitNexus maintenance, GitHub auth switching, branch safety, PR creation reminders, and worktree lifecycle setup.
+
+## Personal Skills
+
+The installer links active skills from `skills/` into the Codex skills root without changing their names. Archived skills live under `archived-skills/` for recovery and are not installed by default.
+
+See `docs/codex-surface-inventory.md` for the public-safe inventory of bundled plugins, active skills, safe MCP declarations, and intentionally excluded local state.
 
 ## Azure DevOps Plugin
 
@@ -136,9 +149,20 @@ npm run build
 node scripts/install-local.mjs
 ```
 
-The installer links every plugin listed in `.agents/plugins/marketplace.json` into the iCloud-backed `codex-plugins` marketplace, enables each `<plugin>@codex-plugins` entry, and disables matching stale standalone entries from older marketplace names if they exist.
-It updates `~/.Codex/config.toml`, writes a timestamped `0600` backup next to that file before changing it, and updates `~/Library/Mobile Documents/com~apple~CloudDocs/Codex-config/.agents/plugins/marketplace.json` plus plugin symlinks under that config root.
-For isolated tests, override the defaults with `CODEX_CONFIG_FILE`, `CODEX_CONFIG_ROOT`, and `CODEX_MARKETPLACE_NAME`. To install only specific plugins, set `CODEX_PLUGINS` to a comma-separated list such as `azure-devops,github-local-ops`.
+The installer links every plugin listed in `.agents/plugins/marketplace.json` into a local `codex-plugins` marketplace root, enables each `<plugin>@codex-plugins` entry, links active top-level skills, upserts safe MCP declarations, and disables matching stale standalone entries from older marketplace names if they exist.
+It updates `~/.Codex/config.toml`, writes a timestamped `0600` backup next to that file before changing it, and defaults the local marketplace source to `~/.Codex/marketplaces/codex-plugins`.
+
+For isolated tests, current-machine installs, or partial installs, override the defaults:
+
+- `CODEX_CONFIG_FILE`: config file to edit, defaults to `~/.Codex/config.toml`.
+- `CODEX_CONFIG_ROOT`: marketplace root to populate, defaults to `~/.Codex/marketplaces/codex-plugins`.
+- `CODEX_SKILLS_ROOT`: skills root to populate, defaults to `~/.Codex/skills`.
+- `CODEX_PLUGINS`: comma-separated plugin names, such as `azure-devops,github-local-ops`.
+- `CODEX_SKILLS`: comma-separated skill names, such as `review-code,worktree`.
+- `CODEX_MCPS`: comma-separated safe MCP declarations, such as `gitnexus,mcp-debugger`.
+- `CODEX_INSTALL_SKILLS=false` or `CODEX_INSTALL_MCPS=false`: skip those install surfaces.
+
+If a target skill path already exists and is not a symlink to this repo, the installer stops instead of replacing it. Move or back up the existing directory before rerunning.
 
 For local and private testing, prefer Azure CLI after a normal Microsoft sign-in:
 
@@ -207,6 +231,8 @@ Do not create or commit `.env` files.
 ```bash
 npm run verify:manifests
 npm run verify:installer
+npm run verify:skills
+npm run public-safety
 npm run workflows:syntax
 npm run build
 npm run lint
