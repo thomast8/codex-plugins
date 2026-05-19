@@ -52,6 +52,7 @@ For all ticket writes:
 - Call create, update, and comment tools first with `apply: false` or omit `apply`.
 - Review the returned method, URL, headers, and body.
 - Only call again with `apply: true` after the user explicitly approves the change.
+- Do not set or modify Azure Boards `System.Tags`, the `tags` parameter, GitHub labels, or other visible classification labels unless the user explicitly asks for labels or tags. Preserve existing visible labels by default.
 
 ## Lifecycle Updates
 
@@ -83,6 +84,7 @@ For PR-review cleanup, branch-specific implementation work, or follow-up fixes, 
 - `ado_get_work_item`: read full work item details with relations.
 - `ado_get_work_tracking_rules`: read the plugin's current lifecycle events, current-iteration default, and create-state behavior before automations or workflows apply ticket status hygiene.
 - `ado_create_work_item`, `ado_update_work_item`, `ado_add_work_item_comment`: preview by default and write only when `apply: true`.
+- Leave `tags` unset for created or updated work items unless the user explicitly asks for visible Azure Boards tags.
 - `ado_create_work_item` prefers the current Azure Boards team iteration unless `preferCurrentIteration: false` is passed or `fields.System.IterationPath` is already supplied. Configure `ADO_TEAM` or `ado_configure_connection.team` when the team name differs from the project name.
 - For ticket lifecycle transitions, pass `lifecycleEvent` instead of hard-coding state names: `start_work` moves the work item after creation/update to the plugin-defined active-work state, `reviews_requested` keeps the workflow state valid while moving the sprint taskboard card to the plugin-defined review column, and `complete_work` uses the plugin-defined completed-work state. Create requests intentionally do not send `System.State` in the initial POST because some Azure Boards process templates reject non-default states until the work item exists.
 - `ado_list_repositories`, `ado_list_refs`, `ado_list_commits`, `ado_list_items`, `ado_get_file`, `ado_list_pull_requests`, `ado_get_pull_request`: use for Azure Repos lookup.
