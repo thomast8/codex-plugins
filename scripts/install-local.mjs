@@ -146,6 +146,25 @@ function pluginSource(pluginName) {
   return resolveInside(path.join(repoRoot, "plugins"), pluginName, "Plugin source");
 }
 
+function ensurePluginRoot(pluginName) {
+  const pluginsRoot = path.join(repoRoot, "plugins");
+  const root = pluginSource(pluginName);
+  ensureExists(root);
+  const rootLinkStat = fs.lstatSync(root);
+  if (rootLinkStat.isSymbolicLink()) {
+    throw new Error(`${root} must not be a symlink.`);
+  }
+  if (!rootLinkStat.isDirectory()) {
+    throw new Error(`${root} must be a directory.`);
+  }
+  const pluginsRootRealPath = fs.realpathSync(pluginsRoot);
+  const rootRealPath = fs.realpathSync(root);
+  if (!pathInside(pluginsRootRealPath, rootRealPath)) {
+    throw new Error(`${root} must stay inside ${pluginsRoot}.`);
+  }
+  return root;
+}
+
 function pluginLink(pluginName) {
   return resolveInside(path.join(configRoot, "plugins"), pluginName, "Plugin link");
 }
@@ -157,6 +176,70 @@ function repoMarketplaceEntry(pluginName) {
     throw new Error(`${repoMarketplacePath} does not contain plugin ${pluginName}.`);
   }
   return JSON.parse(JSON.stringify(entry));
+}
+
+const manifestEntryTypes = {
+  mcpServers: "file",
+  hooks: "file",
+  skills: "directory",
+};
+
+function resolveManifestPath(root, manifestPath, key) {
+  if (typeof manifestPath !== "string" || manifestPath.trim() === "") {
+    throw new Error(`${key} must be a non-empty string path.`);
+  }
+  const resolved = path.resolve(root, manifestPath);
+  if (!pathInside(root, resolved)) {
+    throw new Error(`${key} path ${manifestPath} must stay inside ${root}.`);
+  }
+  ensureExists(resolved);
+  const rootRealPath = fs.realpathSync(root);
+  const resolvedRealPath = fs.realpathSync(resolved);
+  if (!pathInside(rootRealPath, resolvedRealPath)) {
+    throw new Error(`${key} path ${manifestPath} must stay inside ${root}.`);
+  }
+  const linkStat = fs.lstatSync(resolved);
+  if (linkStat.isSymbolicLink()) {
+    throw new Error(`${key} path ${manifestPath} must not be a symlink.`);
+  }
+  const stat = fs.statSync(resolved);
+  const expectedType = manifestEntryTypes[key];
+  if (expectedType === "file" && !stat.isFile()) {
+    throw new Error(`${key} path ${manifestPath} must point to a file.`);
+  }
+  if (expectedType === "directory" && !stat.isDirectory()) {
+    throw new Error(`${key} path ${manifestPath} must point to a directory.`);
+  }
+  return resolved;
+}
+
+function ensurePluginShape(pluginName) {
+  const root = ensurePluginRoot(pluginName);
+  const metadataDir = path.join(root, ".codex-plugin");
+  ensureExists(metadataDir);
+  if (fs.lstatSync(metadataDir).isSymbolicLink()) {
+    throw new Error(`${metadataDir} must not be a symlink.`);
+  }
+  const manifestPath = path.join(root, ".codex-plugin", "plugin.json");
+  ensureExists(manifestPath);
+  if (fs.lstatSync(manifestPath).isSymbolicLink()) {
+    throw new Error(`${manifestPath} must not be a symlink.`);
+  }
+  const manifest = readJson(manifestPath);
+  if (manifest.name !== pluginName) {
+    throw new Error(`${manifestPath} name must be ${pluginName}.`);
+  }
+  let hasEntryPoint = false;
+  for (const key of Object.keys(manifestEntryTypes)) {
+    if (manifest[key] === undefined) {
+      continue;
+    }
+    resolveManifestPath(root, manifest[key], key);
+    hasEntryPoint = true;
+  }
+  if (!hasEntryPoint) {
+    throw new Error(`${manifestPath} must declare at least one of mcpServers, hooks, or skills.`);
+  }
 }
 
 function writeJsonIfChanged(filePath, value) {
@@ -233,8 +316,7 @@ ensureExists(configPath);
 
 const pluginNames = pluginsToInstall();
 for (const pluginName of pluginNames) {
-  ensureExists(path.join(pluginSource(pluginName), ".codex-plugin", "plugin.json"));
-  ensureExists(path.join(pluginSource(pluginName), ".mcp.json"));
+  ensurePluginShape(pluginName);
 }
 
 const linkStatuses = pluginNames.map((pluginName) => ({

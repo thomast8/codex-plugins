@@ -1,0 +1,40 @@
+{
+  "name": "thomas-codex-workflows",
+  "version": "0.1.0",
+  "description": "Personal Codex workflow hooks ported from the Claude Code setup: GitNexus maintenance, GitHub auth checks, branch safety, and worktree hooks.",
+  "author": {
+    "name": "Thomas Tiotto",
+    "url": "https://github.com/thomast8"
+  },
+  "homepage": "https://github.com/thomast8/codex-plugins#readme",
+  "repository": "https://github.com/thomast8/codex-plugins",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "workflow",
+    "hooks",
+    "gitnexus",
+    "worktree"
+  ],
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "Thomas Codex Workflows",
+    "shortDescription": "Personal repo safety hooks",
+    "longDescription": "Ports useful repo safety automation to Codex-native hooks in the Thomas Codex Plugins marketplace.",
+    "developerName": "Thomas Tiotto",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run the review-code skill",
+      "Use the worktree skill"
+    ],
+    "brandColor": "#2563EB",
+    "websiteURL": "https://github.com/thomast8/codex-plugins/tree/main/plugins/thomas-codex-workflows",
+    "privacyPolicyURL": "https://github.com/thomast8/codex-plugins/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/thomast8/codex-plugins/blob/main/LICENSE",
+    "screenshots": []
+  }
+}

@@ -1,6 +1,6 @@
 # Codex Plugins Marketplace
 
-Personal Codex marketplace repo for Thomas's plugins. It currently bundles Azure DevOps and GitHub Local Ops.
+Personal Codex marketplace repo for Thomas's plugins. It currently bundles Azure DevOps, GitHub Local Ops, and Thomas Codex Workflows.
 
 The marketplace root is `thomast8/codex-plugins`. The repo-level marketplace file at `.agents/plugins/marketplace.json` points Codex at plugin packages under `plugins/`.
 
@@ -23,6 +23,9 @@ plugins/
     assets/
     scripts/
     skills/
+  thomas-codex-workflows/
+    .codex-plugin/plugin.json
+    hooks/
 ```
 
 ## Add To Codex
@@ -39,6 +42,7 @@ Codex discovers the marketplace from `.agents/plugins/marketplace.json`; bundled
 
 - `plugins/azure-devops`: Azure Boards and Azure Repos tools with local stdio support and hosted Microsoft Entra OAuth support.
 - `plugins/github-local-ops`: local GitHub workflows for repos, PRs, issues, Actions, releases, and publishing, backed by the GitHub CLI and git.
+- `plugins/thomas-codex-workflows`: personal repo-safety hooks for GitNexus maintenance, GitHub auth switching, branch safety, PR creation reminders, and worktree lifecycle setup.
 
 ## Azure DevOps Plugin
 
@@ -203,6 +207,7 @@ Do not create or commit `.env` files.
 ```bash
 npm run verify:manifests
 npm run verify:installer
+npm run workflows:syntax
 npm run build
 npm run lint
 npm test

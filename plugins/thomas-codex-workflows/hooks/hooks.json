@@ -1,0 +1,61 @@
+{
+  "description": "Personal Codex repo-safety hooks. Uses CLAUDE_PLUGIN_ROOT because Codex plugin hooks currently expose that compatibility variable.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gitnexus-context.sh\"",
+            "timeout": 8000,
+            "statusMessage": "Enriching with GitNexus graph context..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/repo-safety.sh\"",
+            "statusMessage": "Checking repo safety"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/worktree-create.sh\"",
+            "statusMessage": "Preparing new worktree"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/worktree-remove.sh\"",
+            "statusMessage": "Cleaning worktree metadata"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gitnexus-init.sh\"",
+            "statusMessage": "Checking GitNexus index..."
+          }
+        ]
+      }
+    ]
+  }
+}
