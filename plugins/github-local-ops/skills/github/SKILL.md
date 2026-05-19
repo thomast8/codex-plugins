@@ -38,6 +38,8 @@ This plugin does not bypass an admin-disabled hosted connector. It uses the user
    - `github_pr_diff`
    - `github_pr_review_threads`
    - `github_checks`
+   - `github_pr_handoff_status`
+   - `github_review_handoff_preview`
    - `github_actions_runs`
    - `github_issue_list`
    - `github_issue_view`
@@ -66,6 +68,7 @@ For all public writes:
 - Never resolve reviewer-authored review threads; leave resolution to reviewers or maintainers.
 - Do not cite commit SHAs in public replies.
 - For PR review comments, show each original comment with the proposed reply before posting.
+- For reviewer handoff, use `github_pr_handoff_status` and `github_review_handoff_preview` instead of one-off reply loops. Treat code pushed, PR body updated, replies posted, readback confirmed, reviewers requested, and checks passing as separate states.
 
 ## Tool Notes
 
@@ -75,6 +78,8 @@ For all public writes:
 - `github_pr_diff`: read PR diff or changed-file list with truncation controls.
 - `github_pr_review_threads`: fetch inline review-thread IDs and comments through GraphQL.
 - `github_checks`, `github_actions_runs`: inspect PR checks and workflow runs.
+- `github_pr_handoff_status`: consolidated review-handoff status with PR head SHA, local ahead/behind state, draft state, review requests, human missing-reply threads, bot/CodeQL threads, approved reply readback, checks, and rate-limit evidence.
+- `github_review_handoff_preview`: preview the ordered handoff flow: post approved replies, read back replies, update PR body, re-check CI, then request reviewers. Execution still goes through `github_mutation_execute`.
 - `github_mutation_preview`, `github_mutation_execute`: preview-first write flow with short-lived approval tokens. Execute is off by default and requires `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true` in the MCP process environment.
 - Local checkout reads do not fetch by default. Pass `autoFetch: true` only after the workflow needs fresh refs; surface `freshness` warnings and fall back to explicit `git fetch --all` when repo policy requires it.
 

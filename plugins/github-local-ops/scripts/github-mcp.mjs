@@ -181,6 +181,89 @@ const TOOLS = [
     })
   },
   {
+    name: "github_pr_handoff_status",
+    description: "Read the consolidated PR review-handoff state, including pushed code, review replies, checks, review requests, and rate-limit evidence.",
+    inputSchema: objectSchema({
+      ...repoSchema,
+      ...autoFetchSchema,
+      number: {
+        type: "integer",
+        minimum: 1,
+        description: "PR number."
+      },
+      expectedHeadSha: {
+        type: "string",
+        description: "Expected PR head commit SHA or unique prefix."
+      },
+      expectedPrBodyContains: {
+        type: ["string", "array"],
+        items: { type: "string" },
+        description: "Text or text snippets that must be present in the current PR body."
+      },
+      approvedReplies: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            commentId: { type: ["integer", "string"] },
+            body: { type: "string" }
+          },
+          required: ["commentId"]
+        },
+        description: "Approved review-thread replies to verify as posted and read back."
+      },
+      expectedReviewers: {
+        type: "array",
+        items: { type: "string" },
+        description: "Reviewer logins or team slugs expected to be requested."
+      }
+    }, ["number"])
+  },
+  {
+    name: "github_review_handoff_preview",
+    description: "Preview an ordered review handoff that posts approved replies, reads them back, optionally updates the PR body, re-checks CI, and then requests reviewers.",
+    inputSchema: objectSchema({
+      ...repoSchema,
+      ...autoFetchSchema,
+      number: {
+        type: "integer",
+        minimum: 1,
+        description: "PR number."
+      },
+      expectedHeadSha: {
+        type: "string",
+        description: "Expected PR head commit SHA or unique prefix."
+      },
+      prBody: {
+        type: "string",
+        description: "Optional full PR body to apply during handoff."
+      },
+      approvedReplies: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            commentId: { type: ["integer", "string"] },
+            body: { type: "string" }
+          },
+          required: ["commentId", "body"]
+        },
+        description: "Approved review-thread replies to post."
+      },
+      reviewers: {
+        type: "array",
+        items: { type: "string" },
+        description: "Reviewers or teams to request after replies, readback, PR body update, and CI re-check."
+      },
+      allowReviewRequestWithFailingChecks: {
+        type: "boolean",
+        description: "Set true only when the user explicitly wants human re-review despite failing CI."
+      }
+    }, ["number"])
+  },
+  {
     name: "github_actions_runs",
     description: "List recent GitHub Actions workflow runs.",
     inputSchema: objectSchema({
@@ -677,6 +760,242 @@ function summarizeChecks(checks, pending, freshness = null) {
   };
 }
 
+function requireOptionalSha(value, name) {
+  if (value == null || String(value).trim() === "") {
+    return null;
+  }
+  const text = requireNonOptionString(String(value).trim(), name).toLowerCase();
+  if (!/^[0-9a-f]{7,40}$/.test(text)) {
+    throw new Error(`${name} must be a commit SHA or unique SHA prefix.`);
+  }
+  return text;
+}
+
+function shaMatches(expected, actual) {
+  const left = trimOrNull(expected)?.toLowerCase() || null;
+  const right = trimOrNull(actual)?.toLowerCase() || null;
+  if (!left || !right) {
+    return null;
+  }
+  return left.startsWith(right) || right.startsWith(left);
+}
+
+function normalizeStringArray(value, name) {
+  if (value == null || value === "") {
+    return [];
+  }
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((item, index) => requireString(String(item), `${name}[${index}]`));
+}
+
+function normalizeReviewers(value, name = "reviewers") {
+  return normalizeStringArray(value, name).map((reviewer, index) => requireNonOptionString(reviewer, `${name}[${index}]`));
+}
+
+function normalizeApprovedReplies(value, options = {}) {
+  if (value == null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("approvedReplies must be an array.");
+  }
+  return value.map((reply, index) => {
+    if (!reply || typeof reply !== "object" || Array.isArray(reply)) {
+      throw new Error(`approvedReplies[${index}] must be an object.`);
+    }
+    const commentId = requirePositiveInteger(reply.commentId, `approvedReplies[${index}].commentId`);
+    const body = reply.body == null
+      ? null
+      : requireString(String(reply.body), `approvedReplies[${index}].body`);
+    if (options.requireBody && body == null) {
+      throw new Error(`approvedReplies[${index}].body is required`);
+    }
+    return { commentId, body };
+  });
+}
+
+function commentLogin(comment) {
+  return comment?.author?.login || null;
+}
+
+function threadComments(thread) {
+  return thread?.comments?.nodes || [];
+}
+
+function rootThreadComment(thread) {
+  return threadComments(thread).find((comment) => !comment.replyTo) || threadComments(thread)[0] || null;
+}
+
+function commentIdValues(comment) {
+  return [comment?.databaseId, comment?.id]
+    .filter((value) => value != null && String(value).trim() !== "")
+    .map((value) => String(value));
+}
+
+function commentIdMatches(comment, expectedId) {
+  return commentIdValues(comment).includes(String(expectedId));
+}
+
+function replyTargetsComment(comment, expectedId) {
+  return comment?.replyTo != null && commentIdMatches(comment.replyTo, expectedId);
+}
+
+function isBotOrCodeqlComment(comment) {
+  const login = (commentLogin(comment) || "").toLowerCase();
+  const body = String(comment?.body || "").toLowerCase();
+  return login.endsWith("[bot]")
+    || login.includes("codeql")
+    || login === "github-actions"
+    || login === "code-scanning"
+    || body.includes("codeql")
+    || body.includes("code scanning");
+}
+
+function hasAuthorReply(thread, authorLogin) {
+  if (!authorLogin) {
+    return false;
+  }
+  const root = rootThreadComment(thread);
+  return threadComments(thread).some((comment) => (
+    comment !== root
+    && commentLogin(comment) === authorLogin
+    && (comment.replyTo || !root?.createdAt || new Date(comment.createdAt) >= new Date(root.createdAt))
+  ));
+}
+
+function findApprovedReplyReadback(thread, approvedReply) {
+  return threadComments(thread).find((comment) => (
+    replyTargetsComment(comment, approvedReply.commentId)
+    && (approvedReply.body == null || comment.body === approvedReply.body)
+  )) || null;
+}
+
+function summarizeThread(thread) {
+  const root = rootThreadComment(thread);
+  return {
+    threadId: thread.id,
+    rootCommentId: root?.databaseId != null ? String(root.databaseId) : null,
+    rootGraphqlId: root?.id || null,
+    author: commentLogin(root),
+    path: thread.path || root?.path || null,
+    line: thread.line ?? root?.line ?? null,
+    url: root?.url || null,
+    createdAt: root?.createdAt || null,
+    isResolved: thread.isResolved,
+    isOutdated: thread.isOutdated,
+    body: root?.body || null
+  };
+}
+
+function compareThreadCreatedAtDesc(left, right) {
+  return String(right.createdAt || "").localeCompare(String(left.createdAt || ""));
+}
+
+function classifyReviewThreads(pullRequest, approvedReplies) {
+  const threads = pullRequest?.reviewThreads?.nodes || [];
+  const prAuthor = pullRequest?.author?.login || null;
+  const humanMissingAuthorReply = [];
+  const humanAlreadyReplied = [];
+  const botOrCodeql = [];
+  const resolvedOrOutdated = [];
+
+  for (const thread of threads) {
+    const root = rootThreadComment(thread);
+    const summary = summarizeThread(thread);
+    if (thread.isResolved || thread.isOutdated) {
+      resolvedOrOutdated.push(summary);
+      continue;
+    }
+    if (isBotOrCodeqlComment(root)) {
+      botOrCodeql.push(summary);
+      continue;
+    }
+    if (hasAuthorReply(thread, prAuthor)) {
+      humanAlreadyReplied.push(summary);
+    } else {
+      humanMissingAuthorReply.push(summary);
+    }
+  }
+
+  const approvedReplyReadbacks = approvedReplies.map((approvedReply) => {
+    const thread = threads.find((candidate) => threadComments(candidate).some(
+      (comment) => commentIdMatches(comment, approvedReply.commentId)
+    ));
+    const readback = thread ? findApprovedReplyReadback(thread, approvedReply) : null;
+    return {
+      commentId: approvedReply.commentId,
+      posted: readback != null,
+      readbackConfirmed: readback != null,
+      bodyMatches: readback != null && (approvedReply.body == null || readback.body === approvedReply.body),
+      body: readback?.body || null,
+      url: readback?.url || null,
+      thread: thread ? summarizeThread(thread) : null
+    };
+  });
+
+  return {
+    humanMissingAuthorReply: humanMissingAuthorReply.sort(compareThreadCreatedAtDesc),
+    humanAlreadyReplied: humanAlreadyReplied.sort(compareThreadCreatedAtDesc),
+    botOrCodeql: botOrCodeql.sort(compareThreadCreatedAtDesc),
+    resolvedOrOutdated: resolvedOrOutdated.sort(compareThreadCreatedAtDesc),
+    approvedReplyReadbacks,
+    approvedButUnposted: approvedReplyReadbacks.filter((reply) => !reply.posted)
+  };
+}
+
+function summarizeCheckState(checks, pending) {
+  const items = Array.isArray(checks) ? checks : [];
+  const failing = items.filter((check) => check.bucket === "fail" || check.state === "FAILURE");
+  const pendingChecks = items.filter((check) => (
+    check.bucket === "pending"
+    || check.state === "PENDING"
+    || check.state === "QUEUED"
+    || check.state === "IN_PROGRESS"
+  ));
+  return {
+    total: items.length,
+    pass: items.filter((check) => check.bucket === "pass" || check.state === "SUCCESS").length,
+    fail: failing.length,
+    pending: pending || pendingChecks.length > 0,
+    skipping: items.filter((check) => check.bucket === "skipping" || check.state === "SKIPPED").length,
+    passing: failing.length === 0 && pending !== true && pendingChecks.length === 0,
+    failing,
+    pendingChecks
+  };
+}
+
+function reviewRequestName(node) {
+  const reviewer = node?.requestedReviewer;
+  if (!reviewer) {
+    return null;
+  }
+  return reviewer.login || reviewer.slug || reviewer.name || null;
+}
+
+function reviewerMatchesExpected(requestedName, expectedName) {
+  const requested = String(requestedName || "").toLowerCase();
+  const expected = String(expectedName || "").toLowerCase();
+  return requested === expected || expected.endsWith(`/${requested}`);
+}
+
+function summarizeReviewRequests(pullRequest, expectedReviewers) {
+  const requests = (pullRequest?.reviewRequests?.nodes || [])
+    .map((node) => ({
+      type: node?.requestedReviewer?.__typename || null,
+      name: reviewRequestName(node)
+    }))
+    .filter((request) => request.name);
+  const missingExpected = expectedReviewers.filter(
+    (expected) => !requests.some((request) => reviewerMatchesExpected(request.name, expected))
+  );
+  return {
+    current: requests,
+    expected: expectedReviewers,
+    missingExpected,
+    allExpectedRequested: expectedReviewers.length === 0 ? null : missingExpected.length === 0
+  };
+}
+
 function summarizeList(kind, items, freshness = null) {
   const values = Array.isArray(items) ? items : [];
   return {
@@ -1059,6 +1378,7 @@ query($owner: String!, $name: String!, $number: Int!) {
             pageInfo { hasNextPage endCursor }
             nodes {
               id
+              databaseId
               body
               author { login }
               createdAt
@@ -1069,7 +1389,7 @@ query($owner: String!, $name: String!, $number: Int!) {
               originalLine
               diffHunk
               outdated
-              replyTo { id }
+              replyTo { id databaseId }
             }
           }
         }
@@ -1134,6 +1454,262 @@ async function githubChecks(input = {}) {
     abstract: summarizeChecks(result.data, result.status === 8, freshness),
     checks: result.data,
     warnings: freshnessWarnings(freshness)
+  };
+}
+
+function readHandoffGraphql(cwd, repo, number) {
+  const query = `
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      number
+      title
+      state
+      url
+      body
+      reviewDecision
+      isDraft
+      baseRefName
+      headRefName
+      headRefOid
+      author { login }
+      reviewRequests(first: 100) {
+        nodes {
+          requestedReviewer {
+            __typename
+            ... on User { login }
+            ... on Team { slug name }
+          }
+        }
+      }
+      reviewThreads(first: 100) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          startLine
+          originalLine
+          originalStartLine
+          subjectType
+          comments(first: 100) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              id
+              databaseId
+              body
+              author { login }
+              createdAt
+              updatedAt
+              url
+              path
+              line
+              originalLine
+              diffHunk
+              outdated
+              replyTo { id databaseId }
+            }
+          }
+        }
+      }
+    }
+  }
+  rateLimit {
+    limit
+    cost
+    remaining
+    resetAt
+    used
+  }
+}`;
+  return runGh(
+    [
+      "api",
+      "graphql",
+      "-f",
+      `query=${query}`,
+      "-f",
+      `owner=${repo.owner}`,
+      "-f",
+      `name=${repo.name}`,
+      "-F",
+      `number=${number}`
+    ],
+    { cwd, json: true }
+  );
+}
+
+function readPrChecks(cwd, repoNameWithOwner, number) {
+  const result = runGh(
+    addRepo([
+      "pr",
+      "checks",
+      String(number),
+      "--json",
+      "bucket,completedAt,description,event,link,name,startedAt,state,workflow"
+    ], repoNameWithOwner),
+    { cwd, json: true, allowFailure: true }
+  );
+  if (result.status !== 0 && result.status !== 8) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || "gh pr checks failed");
+  }
+  return {
+    command: result.command,
+    pending: result.status === 8,
+    checks: result.data,
+    summary: summarizeCheckState(result.data, result.status === 8)
+  };
+}
+
+function inspectLocalBranch(cwd, prHeadRefName) {
+  const gitRoot = safeRunGit(["rev-parse", "--show-toplevel"], { cwd });
+  if (gitRoot.status !== 0) {
+    return {
+      available: false,
+      reason: "cwd is not inside a git repository"
+    };
+  }
+  const root = gitRoot.stdout.trim();
+  const branch = safeRunGit(["branch", "--show-current"], { cwd: root });
+  const head = safeRunGit(["rev-parse", "HEAD"], { cwd: root });
+  const upstream = safeRunGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: root });
+  const aheadBehind = upstream.status === 0
+    ? safeRunGit(["rev-list", "--left-right", "--count", `HEAD...${upstream.stdout.trim()}`], { cwd: root })
+    : null;
+  const counts = aheadBehind?.status === 0
+    ? aheadBehind.stdout.trim().split(/\s+/).map((value) => Number(value))
+    : null;
+  const remoteHead = prHeadRefName
+    ? safeRunGit(["rev-parse", `refs/remotes/origin/${prHeadRefName}`], { cwd: root })
+    : null;
+  return {
+    available: true,
+    root,
+    currentBranch: branch.status === 0 ? branch.stdout.trim() : null,
+    localHead: head.status === 0 ? head.stdout.trim() : null,
+    upstream: upstream.status === 0 ? upstream.stdout.trim() : null,
+    aheadBehind: counts && Number.isFinite(counts[0]) && Number.isFinite(counts[1])
+      ? { ahead: counts[0], behind: counts[1] }
+      : null,
+    headRefName: prHeadRefName || null,
+    currentBranchMatchesPrHead: branch.status === 0 && prHeadRefName ? branch.stdout.trim() === prHeadRefName : null,
+    remoteHead: remoteHead?.status === 0 ? remoteHead.stdout.trim() : null
+  };
+}
+
+async function githubPrHandoffStatus(input = {}) {
+  const cwd = cwdFrom(input);
+  const freshness = maybeAutoFetch(input);
+  const repo = resolveRepo(input);
+  const number = Number(requirePositiveInteger(input.number, "number"));
+  const expectedHeadSha = requireOptionalSha(input.expectedHeadSha, "expectedHeadSha");
+  const expectedPrBodyContains = normalizeStringArray(input.expectedPrBodyContains, "expectedPrBodyContains");
+  const approvedReplies = normalizeApprovedReplies(input.approvedReplies);
+  const expectedReviewers = normalizeReviewers(input.expectedReviewers || input.reviewers || [], "expectedReviewers");
+  const graph = readHandoffGraphql(cwd, repo, number);
+  const pullRequest = graph.data?.data?.repository?.pullRequest;
+  if (!pullRequest) {
+    throw new Error(`Pull request ${number} was not found in ${repo.nameWithOwner}.`);
+  }
+  const checks = readPrChecks(cwd, repo.nameWithOwner, number);
+  const local = inspectLocalBranch(cwd, pullRequest.headRefName);
+  const threads = classifyReviewThreads(pullRequest, approvedReplies);
+  const reviewRequests = summarizeReviewRequests(pullRequest, expectedReviewers);
+  const remoteHasExpectedCommit = expectedHeadSha ? shaMatches(expectedHeadSha, pullRequest.headRefOid) : null;
+  const localAheadOnPrBranch = local.currentBranchMatchesPrHead === true && (local.aheadBehind?.ahead || 0) > 0;
+  const codePushed = remoteHasExpectedCommit === false
+    ? false
+    : localAheadOnPrBranch
+      ? false
+      : expectedHeadSha
+        ? remoteHasExpectedCommit
+        : null;
+  const prBodyUpdated = expectedPrBodyContains.length === 0
+    ? null
+    : expectedPrBodyContains.every((snippet) => String(pullRequest.body || "").includes(snippet));
+  const approvedRepliesPosted = threads.approvedButUnposted.length === 0;
+  const readbackConfirmed = approvedRepliesPosted;
+  const reviewersReRequested = reviewRequests.allExpectedRequested;
+  const pushedIsNotReplied = remoteHasExpectedCommit === true
+    && approvedReplies.length > 0
+    && threads.approvedButUnposted.length > 0;
+  const blockers = [
+    remoteHasExpectedCommit === false ? "expected_head_sha_not_on_pr" : null,
+    localAheadOnPrBranch ? "local_branch_ahead_of_remote" : null,
+    pullRequest.isDraft ? "pr_is_draft" : null,
+    prBodyUpdated === false ? "pr_body_not_updated" : null,
+    threads.humanMissingAuthorReply.length > 0 ? "human_threads_missing_author_replies" : null,
+    threads.approvedButUnposted.length > 0 ? "approved_replies_not_posted_or_read_back" : null,
+    reviewersReRequested === false ? "expected_reviewers_not_requested" : null,
+    checks.summary.passing ? null : "checks_not_passing"
+  ].filter(Boolean);
+  const warnings = freshnessWarnings(freshness);
+  if (pullRequest.reviewThreads?.pageInfo?.hasNextPage
+    || pullRequest.reviewThreads?.nodes?.some((thread) => thread.comments?.pageInfo?.hasNextPage)) {
+    warnings.push("Review thread result is truncated at 100 threads or 100 comments per thread.");
+  }
+
+  return {
+    command: graph.command,
+    repository: repo.nameWithOwner,
+    freshness,
+    abstract: {
+      kind: "review_handoff_status",
+      pullRequest: number,
+      handoffComplete: blockers.length === 0,
+      blockers,
+      headOid: compactSha(pullRequest.headRefOid),
+      codePushed,
+      prBodyUpdated,
+      approvedRepliesPosted,
+      readbackConfirmed,
+      reviewersReRequested,
+      checksPassing: checks.summary.passing,
+      humanThreadsMissingAuthorReplies: threads.humanMissingAuthorReply.length,
+      botOrCodeqlThreads: threads.botOrCodeql.length,
+      pushedIsNotReplied,
+      fetched: freshness.ok,
+      warnings: warnings.length
+    },
+    state: {
+      codePushed,
+      remoteHasExpectedCommit,
+      localBranchAheadBehind: local.aheadBehind,
+      draft: pullRequest.isDraft,
+      ready: !pullRequest.isDraft,
+      prBodyUpdated,
+      approvedRepliesPosted,
+      readbackConfirmed,
+      reviewersReRequested,
+      pushedIsNotReplied
+    },
+    pullRequest: {
+      id: pullRequest.id,
+      number: pullRequest.number,
+      title: pullRequest.title,
+      state: pullRequest.state,
+      url: pullRequest.url,
+      author: pullRequest.author?.login || null,
+      baseRefName: pullRequest.baseRefName,
+      headRefName: pullRequest.headRefName,
+      headRefOid: pullRequest.headRefOid,
+      reviewDecision: pullRequest.reviewDecision,
+      isDraft: pullRequest.isDraft
+    },
+    local,
+    reviewRequests,
+    threads,
+    checks,
+    rateLimit: graph.data?.data?.rateLimit || null,
+    guards: {
+      handoffComplete: blockers.length === 0,
+      blockers,
+      pushedIsNotReplied
+    },
+    warnings
   };
 }
 
@@ -1423,12 +1999,242 @@ function buildMutation(operation, payload = {}, cwd = process.cwd()) {
   }
 }
 
+function previewReviewHandoffSteps(plan) {
+  const steps = [];
+  for (const reply of plan.approvedReplies) {
+    steps.push({
+      kind: "post_review_thread_reply",
+      commentId: reply.commentId,
+      command: commandPreview([
+        GH_BIN,
+        "api",
+        "--method",
+        "POST",
+        `repos/${plan.repo}/pulls/${plan.number}/comments/${reply.commentId}/replies`,
+        "-f",
+        `body=${reply.body}`
+      ])
+    });
+  }
+  if (plan.approvedReplies.length > 0) {
+    steps.push({ kind: "readback_review_thread_replies" });
+  }
+  if (plan.prBody != null) {
+    steps.push({
+      kind: "update_pr_body",
+      command: commandPreview(addRepo([GH_BIN, "pr", "edit", String(plan.number), "--body", plan.prBody], plan.repo))
+    });
+  }
+  steps.push({ kind: "recheck_ci" });
+  if (plan.reviewers.length > 0) {
+    steps.push({
+      kind: "request_reviewers",
+      command: commandPreview(addRepo([
+        GH_BIN,
+        "pr",
+        "edit",
+        String(plan.number),
+        "--add-reviewer",
+        plan.reviewers.join(",")
+      ], plan.repo))
+    });
+  }
+  return steps;
+}
+
+async function githubReviewHandoffPreview(input = {}) {
+  cleanupApprovals();
+  const cwd = cwdFrom(input);
+  const number = Number(requirePositiveInteger(input.number, "number"));
+  const expectedHeadSha = requireOptionalSha(input.expectedHeadSha, "expectedHeadSha");
+  const approvedReplies = normalizeApprovedReplies(input.approvedReplies, { requireBody: true });
+  const reviewers = normalizeReviewers(input.reviewers || [], "reviewers");
+  const prBody = input.prBody == null ? null : requireString(String(input.prBody), "prBody");
+  const allowReviewRequestWithFailingChecks = input.allowReviewRequestWithFailingChecks === true;
+  const status = await githubPrHandoffStatus({
+    ...input,
+    cwd,
+    number,
+    expectedHeadSha,
+    approvedReplies,
+    expectedPrBodyContains: prBody == null ? input.expectedPrBodyContains : prBody,
+    expectedReviewers: reviewers
+  });
+  if (expectedHeadSha && status.state.remoteHasExpectedCommit === false) {
+    throw new Error(`PR #${number} head ${status.pullRequest.headRefOid} does not match expectedHeadSha ${expectedHeadSha}.`);
+  }
+  if (reviewers.length > 0 && status.checks.summary.fail > 0 && !allowReviewRequestWithFailingChecks) {
+    throw new Error("Checks are failing; set allowReviewRequestWithFailingChecks only after the user explicitly asks for human re-review despite failing CI.");
+  }
+
+  const plan = {
+    kind: "review_handoff",
+    cwd,
+    repo: status.repository,
+    number,
+    expectedHeadSha,
+    approvedReplies,
+    prBody,
+    reviewers,
+    allowReviewRequestWithFailingChecks,
+    riskNotes: [
+      "Posts approved review-thread replies, updates PR metadata, and requests reviewers on GitHub.",
+      "Execution re-checks PR head, reply readback, and CI before requesting reviewers."
+    ],
+    previewStatus: status.abstract
+  };
+  plan.steps = previewReviewHandoffSteps(plan);
+  const token = randomBytes(18).toString("base64url");
+  const expiresAt = new Date(Date.now() + TOKEN_TTL_MS).toISOString();
+  approvals.set(token, {
+    token,
+    operation: "review_handoff",
+    payload: input,
+    plan,
+    hash: hashMutation(plan),
+    createdAt: new Date().toISOString(),
+    expiresAt
+  });
+  return {
+    operation: "review_handoff",
+    repository: plan.repo,
+    number,
+    previewStatus: status.abstract,
+    steps: plan.steps,
+    riskNotes: plan.riskNotes,
+    approvalToken: token,
+    expiresAt,
+    executableByTool: PUBLIC_WRITES_ENABLED,
+    approvalText: PUBLIC_WRITES_ENABLED
+      ? "Approve review_handoff before calling github_mutation_execute with this token."
+      : "Execution is disabled in this MCP process. Set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to allow execute after preview."
+  };
+}
+
+async function executeReviewHandoffPlan(plan) {
+  const before = await githubPrHandoffStatus({
+    cwd: plan.cwd,
+    repo: plan.repo,
+    number: plan.number,
+    expectedHeadSha: plan.expectedHeadSha,
+    approvedReplies: plan.approvedReplies,
+    expectedPrBodyContains: plan.prBody == null ? [] : [plan.prBody],
+    expectedReviewers: plan.reviewers
+  });
+  if (plan.expectedHeadSha && before.state.remoteHasExpectedCommit === false) {
+    throw new Error(`PR #${plan.number} head ${before.pullRequest.headRefOid} does not match expectedHeadSha ${plan.expectedHeadSha}.`);
+  }
+
+  const postedReplies = [];
+  for (const reply of plan.approvedReplies) {
+    const existing = before.threads.approvedReplyReadbacks.find(
+      (readback) => readback.commentId === reply.commentId && readback.bodyMatches
+    );
+    if (existing?.posted) {
+      postedReplies.push({ commentId: reply.commentId, skipped: true, reason: "already posted", url: existing.url });
+      continue;
+    }
+    const result = runGh(
+      [
+        "api",
+        "--method",
+        "POST",
+        `repos/${plan.repo}/pulls/${plan.number}/comments/${reply.commentId}/replies`,
+        "-f",
+        `body=${reply.body}`
+      ],
+      { cwd: plan.cwd, json: true }
+    );
+    postedReplies.push({
+      commentId: reply.commentId,
+      skipped: false,
+      command: result.command,
+      body: result.data?.body || null,
+      url: result.data?.html_url || result.data?.url || null
+    });
+  }
+
+  const afterReplies = await githubPrHandoffStatus({
+    cwd: plan.cwd,
+    repo: plan.repo,
+    number: plan.number,
+    expectedHeadSha: plan.expectedHeadSha,
+    approvedReplies: plan.approvedReplies,
+    expectedPrBodyContains: plan.prBody == null ? [] : [plan.prBody],
+    expectedReviewers: plan.reviewers
+  });
+  if (afterReplies.threads.approvedButUnposted.length > 0) {
+    throw new Error("One or more approved replies were not found in readback; stopping before PR body update or reviewer request.");
+  }
+
+  let prBodyUpdate = null;
+  if (plan.prBody != null) {
+    const result = runGh(
+      addRepo(["pr", "edit", String(plan.number), "--body", plan.prBody], plan.repo),
+      { cwd: plan.cwd }
+    );
+    prBodyUpdate = {
+      command: result.command,
+      stdout: trimOrNull(result.stdout),
+      stderr: trimOrNull(result.stderr)
+    };
+  }
+
+  const checks = readPrChecks(plan.cwd, plan.repo, plan.number);
+  let reviewerRequest = null;
+  if (plan.reviewers.length > 0) {
+    if (afterReplies.pullRequest.isDraft) {
+      reviewerRequest = { skipped: true, reason: "PR is still draft." };
+    } else if (checks.summary.fail > 0 && !plan.allowReviewRequestWithFailingChecks) {
+      reviewerRequest = { skipped: true, reason: "Checks are failing and override was not approved." };
+    } else {
+      const result = runGh(
+        addRepo(["pr", "edit", String(plan.number), "--add-reviewer", plan.reviewers.join(",")], plan.repo),
+        { cwd: plan.cwd }
+      );
+      reviewerRequest = {
+        skipped: false,
+        command: result.command,
+        reviewers: plan.reviewers,
+        stdout: trimOrNull(result.stdout),
+        stderr: trimOrNull(result.stderr)
+      };
+    }
+  }
+
+  const finalStatus = await githubPrHandoffStatus({
+    cwd: plan.cwd,
+    repo: plan.repo,
+    number: plan.number,
+    expectedHeadSha: plan.expectedHeadSha,
+    approvedReplies: plan.approvedReplies,
+    expectedPrBodyContains: plan.prBody == null ? [] : [plan.prBody],
+    expectedReviewers: plan.reviewers
+  });
+  return {
+    operation: "review_handoff",
+    repository: plan.repo,
+    number: plan.number,
+    postedReplies,
+    readback: finalStatus.threads.approvedReplyReadbacks,
+    prBodyUpdate,
+    checks,
+    reviewerRequest,
+    finalStatus: finalStatus.abstract
+  };
+}
+
 function hashMutation(plan) {
   return createHash("sha256").update(JSON.stringify({
     kind: plan.kind,
-    bin: plan.bin,
-    args: plan.args,
-    cwd: plan.cwd
+    bin: plan.bin || null,
+    args: plan.args || null,
+    cwd: plan.cwd,
+    repo: plan.repo || null,
+    number: plan.number || null,
+    approvedReplies: plan.approvedReplies || null,
+    prBody: plan.prBody || null,
+    reviewers: plan.reviewers || null
   })).digest("hex");
 }
 
@@ -1485,6 +2291,9 @@ async function githubMutationExecute(input = {}) {
     throw new Error("Public GitHub writes are disabled. Set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to enable github_mutation_execute.");
   }
   approvals.delete(token);
+  if (approval.plan.kind === "review_handoff") {
+    return executeReviewHandoffPlan(approval.plan);
+  }
   const result = run(approval.plan.bin, approval.plan.args, { cwd: approval.plan.cwd, maxBuffer: 20 * 1024 * 1024 });
   return {
     operation: approval.operation,
@@ -1518,6 +2327,8 @@ const HANDLERS = {
   github_pr_diff: githubPrDiff,
   github_pr_review_threads: githubPrReviewThreads,
   github_checks: githubChecks,
+  github_pr_handoff_status: githubPrHandoffStatus,
+  github_review_handoff_preview: githubReviewHandoffPreview,
   github_actions_runs: githubActionsRuns,
   github_issue_list: githubIssueList,
   github_issue_view: githubIssueView,
@@ -1634,6 +2445,15 @@ async function runSelfTest() {
       tag: "--notes-file=/tmp/secret"
     }
   }));
+  const handoffInvalidReplyRejected = await expectReject(() => githubReviewHandoffPreview({
+    number: 1,
+    approvedReplies: [
+      {
+        commentId: "--body-file=/tmp/secret",
+        body: "Self-test preview only."
+      }
+    ]
+  }));
   const releasePreview = await githubMutationPreview({
     operation: "create_release",
     payload: {
@@ -1668,6 +2488,7 @@ async function runSelfTest() {
       && optionNumberRejected.ok
       && optionWorkflowRejected.ok
       && optionReleaseRejected.ok
+      && handoffInvalidReplyRejected.ok
       && releasePreview.command.args.includes("--draft"),
     server: initialize.result.serverInfo,
     toolCount: names.length,
@@ -1679,6 +2500,7 @@ async function runSelfTest() {
       optionNumberRejected,
       optionWorkflowRejected,
       optionReleaseRejected,
+      handoffInvalidReplyRejected,
       releaseDefaultsToDraft: releasePreview.command.args.includes("--draft"),
       missingTokenRejected: noToken,
       mismatchedTokenRejected: mismatch,
