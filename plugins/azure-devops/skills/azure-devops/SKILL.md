@@ -53,6 +53,16 @@ For all ticket writes:
 - Review the returned method, URL, headers, and body.
 - Only call again with `apply: true` after the user explicitly approves the change.
 
+## Lifecycle Updates
+
+When an agent or automation needs to mark work as started, ready for review, or complete, use the plugin-owned lifecycle abstraction instead of hard-coding Azure Boards state names in prompts or global guidance.
+
+- Use `ado_update_work_item` with `lifecycleEvent: "start_work"` when strong evidence shows assigned work has begun.
+- Use `ado_update_work_item` with `lifecycleEvent: "reviews_requested"` when linked PR evidence shows the work is ready for reviewer attention.
+- Use `ado_update_work_item` with `lifecycleEvent: "complete_work"` only when the user explicitly approves completion or closure.
+- Do not pass both `lifecycleEvent` and `state`; lifecycle events own the state mapping.
+- Keep factual evidence in a separate previewed comment when useful, and apply it only after approval unless a higher-level workflow has explicitly authorized that low-risk write.
+
 ## Work Item Search Strategy
 
 When repo or PR work needs Azure Boards tracking, do not rely on one narrow keyword search.
@@ -72,6 +82,7 @@ For PR-review cleanup, branch-specific implementation work, or follow-up fixes, 
 - `ado_search_work_items`: use WIQL for Boolean searches. The simple `query` field is exploratory text search, not reliable OR logic.
 - `ado_get_work_item`: read full work item details with relations.
 - `ado_create_work_item`, `ado_update_work_item`, `ado_add_work_item_comment`: preview by default and write only when `apply: true`.
+- `ado_update_work_item.lifecycleEvent`: use for workflow transitions so automations and global guidance do not duplicate Azure Boards state mapping.
 - `ado_list_repositories`, `ado_list_refs`, `ado_list_commits`, `ado_list_items`, `ado_get_file`, `ado_list_pull_requests`, `ado_get_pull_request`: use for Azure Repos lookup.
 
 Keep responses evidence-based. Include Azure DevOps URLs for work items, commits, files, repositories, and pull requests whenever available.

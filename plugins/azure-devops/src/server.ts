@@ -62,6 +62,9 @@ const createWorkItemSchema = z.object({
 const updateWorkItemSchema = z.object({
   id: z.number().int().positive(),
   fields: fieldMapSchema.optional(),
+  lifecycleEvent: z
+    .enum(["start_work", "reviews_requested", "complete_work"])
+    .optional(),
   state: z.string().optional(),
   assignedTo: z.string().optional(),
   tags: stringArraySchema.optional(),
@@ -301,7 +304,7 @@ export function createAzureDevOpsServer(options: ServerOptions = {}): McpServer 
     {
       title: "Update Azure DevOps Work Item",
       description:
-        "Preview or update fields on an Azure Boards work item. Defaults to preview.",
+        "Preview or update fields or lifecycle on an Azure Boards work item. Defaults to preview.",
       inputSchema: updateWorkItemSchema
     },
     async (input) =>

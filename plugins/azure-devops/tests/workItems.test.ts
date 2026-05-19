@@ -131,6 +131,45 @@ describe("work item request builders", () => {
     });
   });
 
+  it("maps lifecycle events to Azure Boards state updates", () => {
+    expect(
+      buildUpdateWorkItemPatch({
+        id: 123,
+        lifecycleEvent: "start_work"
+      })
+    ).toEqual([
+      { op: "add", path: "/fields/System.State", value: "Active" }
+    ]);
+
+    expect(
+      buildUpdateWorkItemPatch({
+        id: 123,
+        lifecycleEvent: "reviews_requested"
+      })
+    ).toEqual([
+      { op: "add", path: "/fields/System.State", value: "Active" }
+    ]);
+
+    expect(
+      buildUpdateWorkItemPatch({
+        id: 123,
+        lifecycleEvent: "complete_work"
+      })
+    ).toEqual([
+      { op: "add", path: "/fields/System.State", value: "Closed" }
+    ]);
+  });
+
+  it("rejects mixing lifecycle events with explicit states", () => {
+    expect(() =>
+      buildUpdateWorkItemPatch({
+        id: 123,
+        lifecycleEvent: "start_work",
+        state: "Closed"
+      })
+    ).toThrow("Use either lifecycleEvent or state, not both");
+  });
+
   it("searches work items with client-side top and project checks", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const client = createClient(async (url, init) => {

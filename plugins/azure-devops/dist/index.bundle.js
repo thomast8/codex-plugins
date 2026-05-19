@@ -16313,6 +16313,15 @@ function addOptionalFieldOperation(patch, field, value) {
     addFieldOperation(patch, field, value);
   }
 }
+function lifecycleState(event) {
+  switch (event) {
+    case "start_work":
+    case "reviews_requested":
+      return "Active";
+    case "complete_work":
+      return "Closed";
+  }
+}
 function buildCreateWorkItemPatch(input) {
   const patch = [];
   const fields = input.fields ?? {};
@@ -16333,7 +16342,12 @@ function buildUpdateWorkItemPatch(input) {
   for (const [field, value] of Object.entries(fields)) {
     addFieldOperation(patch, field, value);
   }
-  addOptionalFieldOperation(patch, "System.State", input.state);
+  if (input.lifecycleEvent !== void 0 && input.state !== void 0) {
+    throw new AdoError("Use either lifecycleEvent or state, not both.", {
+      kind: "validation"
+    });
+  }
+  addOptionalFieldOperation(patch, "System.State", input.lifecycleEvent === void 0 ? input.state : lifecycleState(input.lifecycleEvent));
   addOptionalFieldOperation(patch, "System.AssignedTo", input.assignedTo);
   if (input.tags !== void 0) {
     addFieldOperation(patch, "System.Tags", input.tags.join("; "));
@@ -16741,6 +16755,7 @@ var createWorkItemSchema = object({
 var updateWorkItemSchema = object({
   id: number2().int().positive(),
   fields: fieldMapSchema.optional(),
+  lifecycleEvent: _enum(["start_work", "reviews_requested", "complete_work"]).optional(),
   state: string2().optional(),
   assignedTo: string2().optional(),
   tags: stringArraySchema.optional(),
@@ -16898,7 +16913,7 @@ function createAzureDevOpsServer(options = {}) {
   }, async (input) => handleTool(() => createWorkItem(createClient(), createWorkItemSchema.parse(input))));
   server.registerTool("ado_update_work_item", {
     title: "Update Azure DevOps Work Item",
-    description: "Preview or update fields on an Azure Boards work item. Defaults to preview.",
+    description: "Preview or update fields or lifecycle on an Azure Boards work item. Defaults to preview.",
     inputSchema: updateWorkItemSchema
   }, async (input) => handleTool(() => updateWorkItem(createClient(), updateWorkItemSchema.parse(input))));
   server.registerTool("ado_add_work_item_comment", {

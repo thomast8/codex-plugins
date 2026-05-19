@@ -47,11 +47,17 @@ export interface CreateWorkItemInput {
 export interface UpdateWorkItemInput {
   id: number;
   fields?: Record<string, unknown> | undefined;
+  lifecycleEvent?: LifecycleEvent | undefined;
   state?: string | undefined;
   assignedTo?: string | undefined;
   tags?: string[] | undefined;
   apply?: boolean | undefined;
 }
+
+export type LifecycleEvent =
+  | "start_work"
+  | "reviews_requested"
+  | "complete_work";
 
 export interface AddCommentInput {
   id: number;
@@ -247,6 +253,16 @@ function addOptionalFieldOperation(
   }
 }
 
+export function lifecycleState(event: LifecycleEvent): string {
+  switch (event) {
+    case "start_work":
+    case "reviews_requested":
+      return "Active";
+    case "complete_work":
+      return "Closed";
+  }
+}
+
 export function buildCreateWorkItemPatch(
   input: CreateWorkItemInput
 ): JsonPatchOperation[] {
@@ -277,7 +293,19 @@ export function buildUpdateWorkItemPatch(
     addFieldOperation(patch, field, value);
   }
 
-  addOptionalFieldOperation(patch, "System.State", input.state);
+  if (input.lifecycleEvent !== undefined && input.state !== undefined) {
+    throw new AdoError("Use either lifecycleEvent or state, not both.", {
+      kind: "validation"
+    });
+  }
+
+  addOptionalFieldOperation(
+    patch,
+    "System.State",
+    input.lifecycleEvent === undefined
+      ? input.state
+      : lifecycleState(input.lifecycleEvent)
+  );
   addOptionalFieldOperation(patch, "System.AssignedTo", input.assignedTo);
   if (input.tags !== undefined) {
     addFieldOperation(patch, "System.Tags", input.tags.join("; "));
