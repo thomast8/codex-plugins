@@ -37,6 +37,7 @@ describe("MCP contract", () => {
       expect(names).toContain("ado_test_connection");
       expect(names).toContain("ado_search_work_items");
       expect(names).toContain("ado_get_work_item");
+      expect(names).toContain("ado_get_work_tracking_rules");
       expect(names).toContain("ado_create_work_item");
       expect(names).toContain("ado_update_work_item");
       expect(names).toContain("ado_add_work_item_comment");
@@ -49,6 +50,13 @@ describe("MCP contract", () => {
         arguments: {}
       });
       expect(JSON.stringify(status.content)).toContain("configured");
+
+      const rules = await client.callTool({
+        name: "ado_get_work_tracking_rules",
+        arguments: {}
+      });
+      expect(JSON.stringify(rules.content)).toContain("start_work");
+      expect(JSON.stringify(rules.content)).toContain("reviews_requested");
     } finally {
       await client.close();
     }

@@ -15908,6 +15908,9 @@ function normalizeStoredConfig(input) {
     orgUrl: normalizeOrgUrl(input.orgUrl),
     project: input.project.trim()
   };
+  if (input.team !== void 0 && input.team.trim() !== "") {
+    config2.team = input.team.trim();
+  }
   const repositories = parseRepositoryList(input.repositories);
   if (repositories !== void 0) {
     config2.repositories = repositories;
@@ -15959,6 +15962,7 @@ function environmentOverrides(env) {
   return [
     "ADO_ORG_URL",
     "ADO_PROJECT",
+    "ADO_TEAM",
     "ADO_REPOSITORIES",
     "ADO_REQUEST_TIMEOUT_MS",
     "ADO_MAX_PAGES",
@@ -15995,6 +15999,7 @@ function getSetupStatus(env = process.env, configPath = defaultConfigPath(env)) 
   const stored = readStoredConfig(configPath);
   const orgUrl = env.ADO_ORG_URL?.trim() || stored?.orgUrl;
   const project = env.ADO_PROJECT?.trim() || stored?.project;
+  const team = env.ADO_TEAM?.trim() || stored?.team;
   const repositories = env.ADO_REPOSITORIES === void 0 ? stored?.repositories : env.ADO_REPOSITORIES.split(",").map((item) => item.trim()).filter((item) => item.length > 0);
   const configured = orgUrl !== void 0 && project !== void 0;
   const patEnvironmentConfigured = env.ADO_PAT !== void 0 && env.ADO_PAT.trim() !== "" || env.AZURE_DEVOPS_EXT_PAT !== void 0 && env.AZURE_DEVOPS_EXT_PAT.trim() !== "";
@@ -16053,6 +16058,9 @@ function getSetupStatus(env = process.env, configPath = defaultConfigPath(env)) 
   if (project !== void 0) {
     status.project = project;
   }
+  if (team !== void 0) {
+    status.team = team;
+  }
   if (repositories !== void 0 && repositories.length > 0) {
     status.repositories = repositories;
   }
@@ -16107,6 +16115,10 @@ function loadConfig(env = process.env, storedConfig = readStoredConfig(defaultCo
     requestTimeoutMs: readConfiguredPositiveInteger(env, "ADO_REQUEST_TIMEOUT_MS", storedConfig?.requestTimeoutMs, 3e4),
     maxPages: readConfiguredPositiveInteger(env, "ADO_MAX_PAGES", storedConfig?.maxPages, 20)
   };
+  const team = configuredString(env.ADO_TEAM, storedConfig?.team);
+  if (team !== void 0 && team.trim() !== "") {
+    config2.team = team.trim();
+  }
   const repositories = parseRepositoryAllowlist(env.ADO_REPOSITORIES);
   if (repositories.length > 0) {
     config2.repositories = repositories;
@@ -16180,6 +16192,31 @@ function previewRequest(request) {
 }
 
 // dist/workItems.js
+var workItemLifecycleRules = {
+  start_work: { targetState: "Active" },
+  reviews_requested: {
+    targetState: "Active",
+    targetTaskboardColumn: "In Review"
+  },
+  complete_work: { targetState: "Closed" }
+};
+function getWorkTrackingRules() {
+  return {
+    summary: "Azure Boards work tracking rules used by this plugin.",
+    lifecycleEvents: workItemLifecycleRules,
+    currentIteration: {
+      createDefault: true,
+      override: "Pass preferCurrentIteration: false or fields.System.IterationPath."
+    },
+    taskboardColumns: {
+      source: "reviews_requested uses the Azure DevOps taskboard work item column API, not an unsupported System.State value."
+    },
+    createStateBehavior: {
+      mode: "deferred_update_after_create",
+      reason: "Some Azure DevOps process templates reject non-default states on create."
+    }
+  };
+}
 var defaultWorkItemFields = [
   "System.Id",
   "System.WorkItemType",
@@ -16278,6 +16315,57 @@ function getWorkItemsRequest(config2, ids) {
     headers: {}
   };
 }
+function configuredTeam(config2) {
+  return config2.team ?? config2.project;
+}
+function teamIterationsRequest(config2, team, timeframe) {
+  return {
+    method: "GET",
+    url: makeUrl(config2.orgUrl, [
+      config2.project,
+      team,
+      "_apis",
+      "work",
+      "teamsettings",
+      "iterations"
+    ], {
+      "$timeframe": timeframe,
+      "api-version": config2.apiVersion
+    }),
+    headers: {}
+  };
+}
+function taskboardColumnsRequest(config2, team) {
+  return {
+    method: "GET",
+    url: makeUrl(config2.orgUrl, [config2.project, team, "_apis", "work", "taskboardcolumns"], {
+      "api-version": config2.apiVersion
+    }),
+    headers: {}
+  };
+}
+function taskboardWorkItemUpdateRequest(config2, team, iterationId, workItemId, newColumn) {
+  return {
+    method: "PATCH",
+    url: makeUrl(config2.orgUrl, [
+      config2.project,
+      team,
+      "_apis",
+      "work",
+      "taskboardworkitems",
+      iterationId,
+      String(workItemId)
+    ], {
+      "api-version": config2.apiVersion
+    }),
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: {
+      newColumn
+    }
+  };
+}
 function getWorkItemRequest(config2, id) {
   return {
     method: "GET",
@@ -16313,20 +16401,87 @@ function addOptionalFieldOperation(patch, field, value) {
     addFieldOperation(patch, field, value);
   }
 }
-function lifecycleState(event) {
-  switch (event) {
-    case "start_work":
-    case "reviews_requested":
-      return "Active";
-    case "complete_work":
-      return "Closed";
-  }
+function hasOwnField(fields, field) {
+  return Object.prototype.hasOwnProperty.call(fields, field);
 }
-function buildCreateWorkItemPatch(input) {
+function fieldString(item, field) {
+  const value = item.fields?.[field];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : void 0;
+}
+function lastPathSegment(value) {
+  if (value === void 0) {
+    return void 0;
+  }
+  const segment = value.split("\\").at(-1)?.trim();
+  return segment === "" ? void 0 : segment;
+}
+function uniqueStrings(values) {
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const value of values) {
+    if (value === void 0 || value.trim() === "") {
+      continue;
+    }
+    const trimmed = value.trim();
+    if (!seen.has(trimmed)) {
+      seen.add(trimmed);
+      result.push(trimmed);
+    }
+  }
+  return result;
+}
+function teamNameCandidates(config2, item) {
+  const areaPath = item === void 0 ? void 0 : fieldString(item, "System.AreaPath");
+  return uniqueStrings([
+    config2.team,
+    lastPathSegment(areaPath),
+    config2.project
+  ]);
+}
+function lifecycleRule(lifecycleEvent) {
+  if (lifecycleEvent === void 0) {
+    return void 0;
+  }
+  return workItemLifecycleRules[lifecycleEvent];
+}
+function lifecycleTargetState(lifecycleEvent) {
+  return lifecycleRule(lifecycleEvent)?.targetState;
+}
+function lifecycleTaskboardColumn(lifecycleEvent) {
+  return lifecycleRule(lifecycleEvent)?.targetTaskboardColumn;
+}
+function requestedCreateState(input) {
+  const lifecycleState = lifecycleTargetState(input.lifecycleEvent);
+  if (lifecycleState !== void 0) {
+    return lifecycleState;
+  }
+  if (input.state !== void 0) {
+    return input.state;
+  }
+  const fieldState = input.fields?.["System.State"];
+  return typeof fieldState === "string" ? fieldState : void 0;
+}
+function requestedCreateTaskboardColumn(input) {
+  return lifecycleTaskboardColumn(input.lifecycleEvent);
+}
+function workItemIdFromResponse(data) {
+  if (typeof data !== "object" || data === null) {
+    return void 0;
+  }
+  const id = data.id;
+  return typeof id === "number" && Number.isInteger(id) && id > 0 ? id : void 0;
+}
+function buildCreateWorkItemPatch(input, options = {}) {
   const patch = [];
   const fields = input.fields ?? {};
   for (const [field, value] of Object.entries(fields)) {
+    if (field === "System.State") {
+      continue;
+    }
     addFieldOperation(patch, field, value);
+  }
+  if (options.iterationPath !== void 0 && !hasOwnField(fields, "System.IterationPath")) {
+    addFieldOperation(patch, "System.IterationPath", options.iterationPath);
   }
   addFieldOperation(patch, "System.Title", input.title);
   addOptionalFieldOperation(patch, "System.Description", input.description);
@@ -16339,15 +16494,20 @@ function buildCreateWorkItemPatch(input) {
 function buildUpdateWorkItemPatch(input) {
   const patch = [];
   const fields = input.fields ?? {};
-  for (const [field, value] of Object.entries(fields)) {
-    addFieldOperation(patch, field, value);
-  }
   if (input.lifecycleEvent !== void 0 && input.state !== void 0) {
     throw new AdoError("Use either lifecycleEvent or state, not both.", {
       kind: "validation"
     });
   }
-  addOptionalFieldOperation(patch, "System.State", input.lifecycleEvent === void 0 ? input.state : lifecycleState(input.lifecycleEvent));
+  const fieldState = fields["System.State"];
+  const state = lifecycleTargetState(input.lifecycleEvent) ?? input.state ?? (typeof fieldState === "string" ? fieldState : void 0);
+  for (const [field, value] of Object.entries(fields)) {
+    if (field === "System.State" && state !== void 0) {
+      continue;
+    }
+    addFieldOperation(patch, field, value);
+  }
+  addOptionalFieldOperation(patch, "System.State", state);
   addOptionalFieldOperation(patch, "System.AssignedTo", input.assignedTo);
   if (input.tags !== void 0) {
     addFieldOperation(patch, "System.Tags", input.tags.join("; "));
@@ -16359,7 +16519,7 @@ function buildUpdateWorkItemPatch(input) {
   }
   return patch;
 }
-function createWorkItemRequest(config2, input) {
+function createWorkItemRequest(config2, input, options = {}) {
   if (input.workItemType.trim() === "") {
     throw new AdoError("workItemType is required.", { kind: "validation" });
   }
@@ -16374,7 +16534,7 @@ function createWorkItemRequest(config2, input) {
     headers: {
       "Content-Type": jsonPatchContentType
     },
-    body: buildCreateWorkItemPatch(input)
+    body: buildCreateWorkItemPatch(input, options)
   };
 }
 function updateWorkItemRequest(config2, input) {
@@ -16435,8 +16595,12 @@ function assertWorkItemProject(config2, item) {
   });
 }
 async function assertWorkItemIdInConfiguredProject(client, id) {
+  await getWorkItemInConfiguredProject(client, id);
+}
+async function getWorkItemInConfiguredProject(client, id) {
   const response = await client.send(getWorkItemRequest(client.config, id));
   assertWorkItemProject(client.config, response.data);
+  return response.data;
 }
 async function searchWorkItems(client, input) {
   const wiql = buildWiql(input);
@@ -16493,11 +16657,227 @@ async function previewOrApply(client, request, apply, previewSummary, appliedSum
     response: response.data
   };
 }
+function selectCurrentIteration(response) {
+  const iterations = response.value ?? [];
+  return iterations.find((iteration) => iteration.attributes?.timeFrame?.toLowerCase() === "current") ?? iterations[0];
+}
+function selectIterationForPath(response, iterationPath) {
+  const iterations = response.value ?? [];
+  if (iterationPath !== void 0) {
+    const match = iterations.find((iteration) => iteration.path?.toLowerCase() === iterationPath.toLowerCase());
+    if (match !== void 0) {
+      return match;
+    }
+  }
+  return selectCurrentIteration(response);
+}
+async function resolveCurrentIterationPath(client, input) {
+  if (input.preferCurrentIteration === false) {
+    return {};
+  }
+  if (hasOwnField(input.fields ?? {}, "System.IterationPath")) {
+    return {};
+  }
+  try {
+    const team = configuredTeam(client.config);
+    const response = await client.send(teamIterationsRequest(client.config, team, "current"));
+    const iteration = selectCurrentIteration(response.data);
+    if (iteration?.path === void 0) {
+      return {
+        warning: "No current Azure Boards iteration was returned; creating work item without System.IterationPath."
+      };
+    }
+    return {
+      team,
+      iterationId: iteration.id,
+      iterationPath: iteration.path
+    };
+  } catch (error2) {
+    return {
+      warning: error2 instanceof Error ? `Could not resolve current Azure Boards iteration; creating work item without System.IterationPath. ${error2.message}` : "Could not resolve current Azure Boards iteration; creating work item without System.IterationPath."
+    };
+  }
+}
+async function resolveTaskboardColumnUpdate(client, item, targetColumn) {
+  const iterationPath = fieldString(item, "System.IterationPath");
+  const workItemType = fieldString(item, "System.WorkItemType");
+  const failures = [];
+  for (const team of teamNameCandidates(client.config, item)) {
+    try {
+      const iterations = await client.send(teamIterationsRequest(client.config, team));
+      const iteration = selectIterationForPath(iterations.data, iterationPath);
+      if (iteration?.id === void 0) {
+        failures.push(`${team}: no matching team iteration was returned`);
+        continue;
+      }
+      const columns = await client.send(taskboardColumnsRequest(client.config, team));
+      const columnNames = (columns.data.columns ?? []).map((column2) => column2.name).filter((name) => name !== void 0);
+      const column = columnNames.find((name) => name.toLowerCase() === targetColumn.toLowerCase());
+      if (column === void 0) {
+        failures.push(`${team}: taskboard column '${targetColumn}' was not found. Available columns: ${columnNames.join(", ")}`);
+        continue;
+      }
+      return {
+        team,
+        iterationId: iteration.id,
+        iterationPath: iteration.path,
+        request: taskboardWorkItemUpdateRequest(client.config, team, iteration.id, item.id, column)
+      };
+    } catch (error2) {
+      failures.push(error2 instanceof Error ? `${team}: ${error2.message}` : `${team}: failed`);
+    }
+  }
+  throw new AdoError(`Could not resolve Azure Boards taskboard column '${targetColumn}' for work item ${item.id}.`, {
+    kind: "validation",
+    details: {
+      workItemId: item.id,
+      workItemType,
+      iterationPath,
+      attemptedTeams: teamNameCandidates(client.config, item),
+      failures
+    }
+  });
+}
+function updateInputForCurrentItem(input, item) {
+  const fields = { ...input.fields ?? {} };
+  const targetState = lifecycleTargetState(input.lifecycleEvent) ?? input.state ?? (typeof fields["System.State"] === "string" ? fields["System.State"] : void 0);
+  if (targetState !== void 0 && targetState === fieldString(item, "System.State")) {
+    delete fields["System.State"];
+  }
+  const update = {
+    id: input.id,
+    assignedTo: input.assignedTo,
+    tags: input.tags
+  };
+  if (Object.keys(fields).length > 0) {
+    update.fields = fields;
+  }
+  if (targetState !== void 0 && targetState !== fieldString(item, "System.State")) {
+    update.state = targetState;
+  }
+  return update;
+}
+function hasWorkItemUpdate(input) {
+  return input.fields !== void 0 || input.state !== void 0 || input.assignedTo !== void 0 || input.tags !== void 0;
+}
+async function updateWorkItemWithTaskboardColumn(client, input, targetColumn) {
+  const item = await getWorkItemInConfiguredProject(client, input.id);
+  const workItemUpdate = updateInputForCurrentItem(input, item);
+  const workItemRequest = hasWorkItemUpdate(workItemUpdate) ? updateWorkItemRequest(client.config, workItemUpdate) : void 0;
+  const taskboardUpdate = await resolveTaskboardColumnUpdate(client, item, targetColumn);
+  if (input.apply !== true) {
+    const requests = {
+      taskboardColumnUpdate: previewRequest(taskboardUpdate.request)
+    };
+    if (workItemRequest !== void 0) {
+      requests.workItemUpdate = previewRequest(workItemRequest);
+    }
+    return {
+      applied: false,
+      summary: `Preview lifecycle update for work item ${input.id}.`,
+      taskboard: {
+        team: taskboardUpdate.team,
+        iterationPath: taskboardUpdate.iterationPath,
+        column: targetColumn
+      },
+      requests
+    };
+  }
+  const result = {
+    applied: true,
+    summary: `Updated work item ${input.id}.`,
+    taskboard: {
+      team: taskboardUpdate.team,
+      iterationPath: taskboardUpdate.iterationPath,
+      column: targetColumn
+    }
+  };
+  if (workItemRequest !== void 0) {
+    const workItemResponse = await client.send(workItemRequest);
+    result.workItemUpdate = workItemResponse.data;
+  }
+  const taskboardResponse = await client.send(taskboardUpdate.request);
+  result.taskboardColumnUpdate = taskboardResponse.data;
+  return result;
+}
 async function createWorkItem(client, input) {
-  const request = createWorkItemRequest(client.config, input);
-  return previewOrApply(client, request, input.apply, `Preview create ${input.workItemType} work item.`, `Created ${input.workItemType} work item.`);
+  const currentIteration = await resolveCurrentIterationPath(client, input);
+  const createRequest = createWorkItemRequest(client.config, input, {
+    iterationPath: currentIteration.iterationPath
+  });
+  const deferredState = requestedCreateState(input);
+  const deferredTaskboardColumn = requestedCreateTaskboardColumn(input);
+  if (input.apply !== true) {
+    const preview = {
+      applied: false,
+      summary: `Preview create ${input.workItemType} work item.`,
+      request: previewRequest(createRequest)
+    };
+    if (currentIteration.warning !== void 0) {
+      preview.warning = currentIteration.warning;
+    }
+    if (deferredState !== void 0) {
+      preview.deferredStateUpdate = {
+        state: deferredState,
+        reason: "Azure DevOps rejects some initial states on create; the plugin applies this state after the work item exists."
+      };
+    }
+    if (deferredTaskboardColumn !== void 0) {
+      preview.deferredTaskboardColumnUpdate = {
+        column: deferredTaskboardColumn,
+        team: currentIteration.team,
+        iterationPath: currentIteration.iterationPath,
+        reason: "Sprint taskboard columns are updated after the work item exists."
+      };
+    }
+    return preview;
+  }
+  const created = await client.send(createRequest);
+  const result = {
+    applied: true,
+    summary: `Created ${input.workItemType} work item.`,
+    response: created.data
+  };
+  if (currentIteration.warning !== void 0) {
+    result.warning = currentIteration.warning;
+  }
+  if (deferredState !== void 0) {
+    const id = workItemIdFromResponse(created.data);
+    if (id === void 0) {
+      throw new AdoError("Azure DevOps create response did not include a work item id for the deferred state update.", { kind: "validation" });
+    }
+    const stateRequest = updateWorkItemRequest(client.config, {
+      id,
+      state: deferredState
+    });
+    const stateResponse = await client.send(stateRequest);
+    result.deferredStateUpdate = {
+      state: deferredState,
+      response: stateResponse.data
+    };
+  }
+  if (deferredTaskboardColumn !== void 0) {
+    const id = workItemIdFromResponse(created.data);
+    if (id === void 0) {
+      throw new AdoError("Azure DevOps create response did not include a work item id for the deferred taskboard column update.", { kind: "validation" });
+    }
+    if (currentIteration.team === void 0 || currentIteration.iterationId === void 0) {
+      throw new AdoError("Azure DevOps current iteration could not be resolved for the deferred taskboard column update.", { kind: "validation" });
+    }
+    const taskboardRequest = taskboardWorkItemUpdateRequest(client.config, currentIteration.team, currentIteration.iterationId, id, deferredTaskboardColumn);
+    const taskboardResponse = await client.send(taskboardRequest);
+    result.deferredTaskboardColumnUpdate = {
+      column: deferredTaskboardColumn,
+      response: taskboardResponse.data
+    };
+  }
+  return result;
 }
 async function updateWorkItem(client, input) {
+  const targetColumn = lifecycleTaskboardColumn(input.lifecycleEvent);
+  if (targetColumn !== void 0) {
+    return updateWorkItemWithTaskboardColumn(client, input, targetColumn);
+  }
   const request = updateWorkItemRequest(client.config, input);
   return previewOrApply(client, request, input.apply, `Preview update for work item ${input.id}.`, `Updated work item ${input.id}.`, () => assertWorkItemIdInConfiguredProject(client, input.id));
 }
@@ -16735,6 +17115,11 @@ async function getPullRequest(client, input) {
 // dist/server.js
 var stringArraySchema = array(string2().min(1)).max(50);
 var fieldMapSchema = record(string2().min(1), unknown());
+var lifecycleEventSchema = _enum([
+  "start_work",
+  "reviews_requested",
+  "complete_work"
+]);
 var searchWorkItemsSchema = object({
   wiql: string2().optional(),
   query: string2().optional(),
@@ -16750,13 +17135,16 @@ var createWorkItemSchema = object({
   assignedTo: string2().optional(),
   tags: stringArraySchema.optional(),
   fields: fieldMapSchema.optional(),
+  state: string2().optional(),
+  lifecycleEvent: lifecycleEventSchema.optional(),
+  preferCurrentIteration: boolean2().default(true),
   apply: boolean2().default(false)
 });
 var updateWorkItemSchema = object({
   id: number2().int().positive(),
   fields: fieldMapSchema.optional(),
-  lifecycleEvent: _enum(["start_work", "reviews_requested", "complete_work"]).optional(),
   state: string2().optional(),
+  lifecycleEvent: lifecycleEventSchema.optional(),
   assignedTo: string2().optional(),
   tags: stringArraySchema.optional(),
   apply: boolean2().default(false)
@@ -16807,6 +17195,7 @@ var getPullRequestSchema = object({
 var configureConnectionSchema = object({
   orgUrl: string2().url(),
   project: string2().min(1),
+  team: string2().min(1).optional(),
   repositories: stringArraySchema.optional(),
   requestTimeoutMs: number2().int().positive().optional(),
   maxPages: number2().int().positive().optional()
@@ -16861,6 +17250,9 @@ function createAzureDevOpsServer(options = {}) {
         orgUrl: parsed.orgUrl,
         project: parsed.project
       };
+      if (parsed.team !== void 0) {
+        storedConfig.team = parsed.team;
+      }
       if (parsed.repositories !== void 0) {
         storedConfig.repositories = parsed.repositories;
       }
@@ -16876,6 +17268,7 @@ function createAzureDevOpsServer(options = {}) {
         config: {
           orgUrl: config2.orgUrl,
           project: config2.project,
+          team: config2.team,
           repositories: config2.repositories,
           requestTimeoutMs: config2.requestTimeoutMs,
           maxPages: config2.maxPages
@@ -16906,14 +17299,19 @@ function createAzureDevOpsServer(options = {}) {
     description: "Read one Azure Boards work item with fields and relations.",
     inputSchema: object({ id: number2().int().positive() })
   }, async (input) => handleTool(() => getWorkItem(createClient(), object({ id: number2().int().positive() }).parse(input).id)));
+  server.registerTool("ado_get_work_tracking_rules", {
+    title: "Get Azure Boards Work Tracking Rules",
+    description: "Read the plugin-defined Azure Boards lifecycle events, current iteration default, and create-state behavior.",
+    inputSchema: object({})
+  }, async () => handleTool(async () => getWorkTrackingRules()));
   server.registerTool("ado_create_work_item", {
     title: "Create Azure DevOps Work Item",
-    description: "Preview or create an Azure Boards work item. Defaults to preview.",
+    description: "Preview or create an Azure Boards work item. Defaults to preview, prefers the current team iteration, and defers requested lifecycle state moves until after creation.",
     inputSchema: createWorkItemSchema
   }, async (input) => handleTool(() => createWorkItem(createClient(), createWorkItemSchema.parse(input))));
   server.registerTool("ado_update_work_item", {
     title: "Update Azure DevOps Work Item",
-    description: "Preview or update fields or lifecycle on an Azure Boards work item. Defaults to preview.",
+    description: "Preview or update fields or lifecycle on an Azure Boards work item. Defaults to preview and supports plugin-defined lifecycle events such as start_work and reviews_requested.",
     inputSchema: updateWorkItemSchema
   }, async (input) => handleTool(() => updateWorkItem(createClient(), updateWorkItemSchema.parse(input))));
   server.registerTool("ado_add_work_item_comment", {

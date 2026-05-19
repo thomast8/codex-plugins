@@ -387,6 +387,7 @@ describe("remote hosted MCP app", () => {
 
       expect(names).toContain("ado_setup_status");
       expect(names).not.toContain("ado_configure_connection");
+      expect(names).toContain("ado_get_work_tracking_rules");
       expect(names).toContain("ado_list_repositories");
 
       const status = await client.callTool({

@@ -81,8 +81,10 @@ For PR-review cleanup, branch-specific implementation work, or follow-up fixes, 
 
 - `ado_search_work_items`: use WIQL for Boolean searches. The simple `query` field is exploratory text search, not reliable OR logic.
 - `ado_get_work_item`: read full work item details with relations.
+- `ado_get_work_tracking_rules`: read the plugin's current lifecycle events, current-iteration default, and create-state behavior before automations or workflows apply ticket status hygiene.
 - `ado_create_work_item`, `ado_update_work_item`, `ado_add_work_item_comment`: preview by default and write only when `apply: true`.
-- `ado_update_work_item.lifecycleEvent`: use for workflow transitions so automations and global guidance do not duplicate Azure Boards state mapping.
+- `ado_create_work_item` prefers the current Azure Boards team iteration unless `preferCurrentIteration: false` is passed or `fields.System.IterationPath` is already supplied. Configure `ADO_TEAM` or `ado_configure_connection.team` when the team name differs from the project name.
+- For ticket lifecycle transitions, pass `lifecycleEvent` instead of hard-coding state names: `start_work` moves the work item after creation/update to the plugin-defined active-work state, `reviews_requested` keeps the workflow state valid while moving the sprint taskboard card to the plugin-defined review column, and `complete_work` uses the plugin-defined completed-work state. Create requests intentionally do not send `System.State` in the initial POST because some Azure Boards process templates reject non-default states until the work item exists.
 - `ado_list_repositories`, `ado_list_refs`, `ado_list_commits`, `ado_list_items`, `ado_get_file`, `ado_list_pull_requests`, `ado_get_pull_request`: use for Azure Repos lookup.
 
 Keep responses evidence-based. Include Azure DevOps URLs for work items, commits, files, repositories, and pull requests whenever available.

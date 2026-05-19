@@ -22,6 +22,7 @@ describe("config", () => {
       {
         ADO_ORG_URL: "https://dev.azure.com/example",
         ADO_PROJECT: "Project",
+        ADO_TEAM: "Team",
         ADO_REPOSITORIES: "repo-a, repo-b",
         ADO_PAT: "pat",
         ADO_REQUEST_TIMEOUT_MS: "5000",
@@ -33,6 +34,7 @@ describe("config", () => {
     expect(config).toMatchObject({
       orgUrl: "https://dev.azure.com/example",
       project: "Project",
+      team: "Team",
       repositories: ["repo-a", "repo-b"],
       pat: "pat",
       requestTimeoutMs: 5000,
@@ -46,6 +48,7 @@ describe("config", () => {
       {
         orgUrl: "https://dev.azure.com/stored",
         project: "Stored Project",
+        team: "Stored Team",
         repositories: ["repo"],
         requestTimeoutMs: 1000,
         maxPages: 2
@@ -55,6 +58,7 @@ describe("config", () => {
     expect(config).toMatchObject({
       orgUrl: "https://dev.azure.com/stored",
       project: "Stored Project",
+      team: "Stored Team",
       repositories: ["repo"],
       requestTimeoutMs: 1000,
       maxPages: 2
@@ -113,6 +117,7 @@ describe("config", () => {
       {
         orgUrl: "https://dev.azure.com/example/",
         project: "Project",
+        team: " Team ",
         repositories: [" repo-a ", ""],
         maxPages: 4
       },
@@ -122,6 +127,7 @@ describe("config", () => {
     expect(written).toEqual({
       orgUrl: "https://dev.azure.com/example",
       project: "Project",
+      team: "Team",
       repositories: ["repo-a"],
       maxPages: 4
     });
@@ -134,7 +140,8 @@ describe("config", () => {
     writeStoredConfig(
       {
         orgUrl: "https://dev.azure.com/example",
-        project: "Project"
+        project: "Project",
+        team: "Team"
       },
       configPath
     );
@@ -143,6 +150,7 @@ describe("config", () => {
       configured: true,
       orgUrl: "https://dev.azure.com/example",
       project: "Project",
+      team: "Team",
       auth: {
         mode: "microsoft-oauth",
         status: "not-configured",

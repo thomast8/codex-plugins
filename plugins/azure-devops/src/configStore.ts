@@ -11,6 +11,7 @@ import { normalizeOrgUrl } from "./validation.js";
 export interface StoredAdoConfig {
   orgUrl: string;
   project: string;
+  team?: string | undefined;
   repositories?: string[] | undefined;
   requestTimeoutMs?: number | undefined;
   maxPages?: number | undefined;
@@ -21,6 +22,7 @@ export interface SetupStatus {
   configFile: string;
   orgUrl?: string | undefined;
   project?: string | undefined;
+  team?: string | undefined;
   repositories?: string[] | undefined;
   environmentOverrides: string[];
   auth: {
@@ -86,6 +88,10 @@ export function normalizeStoredConfig(input: StoredAdoConfig): StoredAdoConfig {
     orgUrl: normalizeOrgUrl(input.orgUrl),
     project: input.project.trim()
   };
+
+  if (input.team !== undefined && input.team.trim() !== "") {
+    config.team = input.team.trim();
+  }
 
   const repositories = parseRepositoryList(input.repositories);
   if (repositories !== undefined) {
@@ -156,6 +162,7 @@ function environmentOverrides(env: NodeJS.ProcessEnv): string[] {
   return [
     "ADO_ORG_URL",
     "ADO_PROJECT",
+    "ADO_TEAM",
     "ADO_REPOSITORIES",
     "ADO_REQUEST_TIMEOUT_MS",
     "ADO_MAX_PAGES",
@@ -204,6 +211,7 @@ export function getSetupStatus(
   const stored = readStoredConfig(configPath);
   const orgUrl = env.ADO_ORG_URL?.trim() || stored?.orgUrl;
   const project = env.ADO_PROJECT?.trim() || stored?.project;
+  const team = env.ADO_TEAM?.trim() || stored?.team;
   const repositories =
     env.ADO_REPOSITORIES === undefined
       ? stored?.repositories
@@ -281,6 +289,9 @@ export function getSetupStatus(
   }
   if (project !== undefined) {
     status.project = project;
+  }
+  if (team !== undefined) {
+    status.team = team;
   }
   if (repositories !== undefined && repositories.length > 0) {
     status.repositories = repositories;

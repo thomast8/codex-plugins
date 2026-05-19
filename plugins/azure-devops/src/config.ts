@@ -10,6 +10,7 @@ import { normalizeOrgUrl } from "./validation.js";
 export interface AdoConfig {
   orgUrl: string;
   project: string;
+  team?: string | undefined;
   apiVersion: "7.1";
   repositories?: string[];
   pat?: string;
@@ -107,6 +108,11 @@ export function loadConfig(
       20
     )
   };
+
+  const team = configuredString(env.ADO_TEAM, storedConfig?.team);
+  if (team !== undefined && team.trim() !== "") {
+    config.team = team.trim();
+  }
 
   const repositories = parseRepositoryAllowlist(env.ADO_REPOSITORIES);
   if (repositories.length > 0) {

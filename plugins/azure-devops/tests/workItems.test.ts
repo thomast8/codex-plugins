@@ -8,8 +8,12 @@ import {
   buildUpdateWorkItemPatch,
   buildWiql,
   createWorkItem,
+  currentIterationRequest,
+  getWorkTrackingRules,
   getWorkItem,
   searchWorkItems,
+  selectCurrentIterationPath,
+  taskboardWorkItemUpdateRequest,
   updateWorkItem
 } from "../src/workItems.js";
 import { createClient, jsonResponse, testConfig } from "./helpers.js";
@@ -75,17 +79,53 @@ describe("work item request builders", () => {
         workItemType: "Bug",
         title: "Broken flow",
         description: "Steps",
+        state: "Active",
         tags: ["codex", "ado"],
         fields: {
-          "Custom.Risk": "High"
-        }
+          "Custom.Risk": "High",
+          "System.State": "Active"
+        },
+        lifecycleEvent: "start_work"
+      }, {
+        iterationPath: "Example Project\\Sprint 13"
       })
     ).toEqual([
       { op: "add", path: "/fields/Custom.Risk", value: "High" },
+      {
+        op: "add",
+        path: "/fields/System.IterationPath",
+        value: "Example Project\\Sprint 13"
+      },
       { op: "add", path: "/fields/System.Title", value: "Broken flow" },
       { op: "add", path: "/fields/System.Description", value: "Steps" },
       { op: "add", path: "/fields/System.Tags", value: "codex; ado" }
     ]);
+  });
+
+  it("keeps explicit create iteration fields over the current sprint", () => {
+    const patch = buildCreateWorkItemPatch(
+      {
+        workItemType: "Task",
+        title: "Use explicit sprint",
+        fields: {
+          "System.IterationPath": "Example Project\\Backlog"
+        }
+      },
+      {
+        iterationPath: "Example Project\\Sprint 13"
+      }
+    );
+
+    expect(patch).toContainEqual({
+      op: "add",
+      path: "/fields/System.IterationPath",
+      value: "Example Project\\Backlog"
+    });
+    expect(patch).not.toContainEqual({
+      op: "add",
+      path: "/fields/System.IterationPath",
+      value: "Example Project\\Sprint 13"
+    });
   });
 
   it("rejects unsupported field names", () => {
@@ -99,19 +139,110 @@ describe("work item request builders", () => {
     ).toThrow("Unsupported Azure DevOps field reference name");
   });
 
-  it("previews create writes without calling fetch", async () => {
+  it("previews create writes with the current iteration when available", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createClient(async (url, init) => {
+      calls.push({ url, init });
+      return jsonResponse({
+        value: [
+          {
+            path: "Example Project\\Sprint 13",
+            attributes: {
+              timeFrame: "current"
+            }
+          }
+        ]
+      });
+    });
+
+    const result = await createWorkItem(client, {
+      workItemType: "Task",
+      title: "Preview me",
+      lifecycleEvent: "start_work"
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.init.method).toBe("GET");
+    expect(result).toMatchObject({
+      applied: false,
+      summary: "Preview create Task work item.",
+      deferredStateUpdate: {
+        state: "Active"
+      },
+      request: {
+        body: expect.arrayContaining([
+          {
+            op: "add",
+            path: "/fields/System.IterationPath",
+            value: "Example Project\\Sprint 13"
+          }
+        ])
+      }
+    });
+  });
+
+  it("can preview create writes without current iteration lookup", async () => {
     const client = createClient(async () => {
       throw new Error("fetch should not be called for previews");
     });
 
     const result = await createWorkItem(client, {
       workItemType: "Task",
-      title: "Preview me"
+      title: "Preview me",
+      preferCurrentIteration: false
     });
 
     expect(result).toMatchObject({
       applied: false,
       summary: "Preview create Task work item."
+    });
+  });
+
+  it("creates first and applies requested lifecycle state after the item exists", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createClient(async (url, init) => {
+      calls.push({ url, init });
+      if (init.method === "GET") {
+        return jsonResponse({
+          value: [
+            {
+              path: "Example Project\\Sprint 13",
+              attributes: {
+                timeFrame: "current"
+              }
+            }
+          ]
+        });
+      }
+      if (init.method === "POST") {
+        return jsonResponse({ id: 321 });
+      }
+      return jsonResponse({ id: 321, fields: { "System.State": "Active" } });
+    });
+
+    const result = await createWorkItem(client, {
+      workItemType: "Task",
+      title: "Create me",
+      lifecycleEvent: "start_work",
+      apply: true
+    });
+
+    expect(result).toMatchObject({
+      applied: true,
+      deferredStateUpdate: {
+        state: "Active"
+      }
+    });
+    expect(calls.map((call) => call.init.method)).toEqual(["GET", "POST", "PATCH"]);
+    expect(JSON.parse(String(calls[1]?.init.body))).not.toContainEqual({
+      op: "add",
+      path: "/fields/System.State",
+      value: "Active"
+    });
+    expect(JSON.parse(String(calls[2]?.init.body))).toContainEqual({
+      op: "add",
+      path: "/fields/System.State",
+      value: "Active"
     });
   });
 
@@ -289,6 +420,228 @@ describe("work item request builders", () => {
 
     expect(result).toMatchObject({ applied: true });
     expect(calls.map((call) => call.init.method)).toEqual(["GET", "PATCH"]);
+  });
+
+  it("maps review lifecycle updates to Active state", () => {
+    expect(
+      buildUpdateWorkItemPatch({
+        id: 123,
+        lifecycleEvent: "reviews_requested"
+      })
+    ).toEqual([
+      { op: "add", path: "/fields/System.State", value: "Active" }
+    ]);
+  });
+
+  it("exposes work tracking rules for automations", () => {
+    expect(getWorkTrackingRules()).toMatchObject({
+      lifecycleEvents: {
+        start_work: { targetState: "Active" },
+        reviews_requested: {
+          targetState: "Active",
+          targetTaskboardColumn: "In Review"
+        }
+      },
+      currentIteration: {
+        createDefault: true
+      },
+      createStateBehavior: {
+        mode: "deferred_update_after_create"
+      }
+    });
+  });
+
+  it("builds taskboard column update requests", () => {
+    const request = taskboardWorkItemUpdateRequest(
+      testConfig,
+      "Delivery Team",
+      "iteration-13",
+      123,
+      "In Review"
+    );
+
+    expect(request).toEqual({
+      method: "PATCH",
+      url: expect.stringContaining(
+        "Example%20Project/Delivery%20Team/_apis/work/taskboardworkitems/iteration-13/123"
+      ),
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: {
+        newColumn: "In Review"
+      }
+    });
+  });
+
+  it("previews review lifecycle updates through the sprint taskboard column", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createClient(async (url, init) => {
+      calls.push({ url, init });
+      if (url.includes("_apis/wit/workitems/123")) {
+        return jsonResponse({
+          id: 123,
+          fields: {
+            "System.TeamProject": "Example Project",
+            "System.AreaPath": "Example Project\\Delivery Team",
+            "System.IterationPath": "Example Project\\Sprint 13",
+            "System.WorkItemType": "Task",
+            "System.State": "Active"
+          }
+        });
+      }
+      if (url.includes("teamsettings/iterations")) {
+        return jsonResponse({
+          value: [
+            {
+              id: "iteration-13",
+              path: "Example Project\\Sprint 13",
+              attributes: { timeFrame: "current" }
+            }
+          ]
+        });
+      }
+      return jsonResponse({
+        columns: [
+          {
+            name: "Active",
+            mappings: [{ workItemType: "Task", state: "Active" }]
+          },
+          {
+            name: "In Review",
+            mappings: [{ workItemType: "Task", state: "Active" }]
+          }
+        ],
+        isCustomized: true,
+        isValid: true
+      });
+    });
+
+    const result = await updateWorkItem(client, {
+      id: 123,
+      lifecycleEvent: "reviews_requested"
+    });
+
+    expect(calls.map((call) => call.init.method)).toEqual(["GET", "GET", "GET"]);
+    expect(result).toMatchObject({
+      applied: false,
+      taskboard: {
+        team: "Delivery Team",
+        iterationPath: "Example Project\\Sprint 13",
+        column: "In Review"
+      },
+      requests: {
+        taskboardColumnUpdate: {
+          method: "PATCH",
+          body: { newColumn: "In Review" }
+        }
+      }
+    });
+    expect(JSON.stringify(result)).not.toContain("workItemUpdate");
+  });
+
+  it("applies review lifecycle updates after activating new work items", async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const client = createClient(async (url, init) => {
+      calls.push({ url, init });
+      if (url.includes("_apis/wit/workitems/123") && init.method === "GET") {
+        return jsonResponse({
+          id: 123,
+          fields: {
+            "System.TeamProject": "Example Project",
+            "System.AreaPath": "Example Project\\Delivery Team",
+            "System.IterationPath": "Example Project\\Sprint 13",
+            "System.WorkItemType": "Task",
+            "System.State": "New"
+          }
+        });
+      }
+      if (url.includes("teamsettings/iterations")) {
+        return jsonResponse({
+          value: [
+            {
+              id: "iteration-13",
+              path: "Example Project\\Sprint 13",
+              attributes: { timeFrame: "current" }
+            }
+          ]
+        });
+      }
+      if (url.includes("taskboardcolumns")) {
+        return jsonResponse({
+          columns: [{ name: "In Review" }],
+          isCustomized: true,
+          isValid: true
+        });
+      }
+      if (url.includes("_apis/wit/workitems/123") && init.method === "PATCH") {
+        return jsonResponse({ id: 123, fields: { "System.State": "Active" } });
+      }
+      return jsonResponse({
+        workItemId: 123,
+        state: "Active",
+        column: "In Review"
+      });
+    });
+
+    const result = await updateWorkItem(client, {
+      id: 123,
+      lifecycleEvent: "reviews_requested",
+      apply: true
+    });
+
+    expect(result).toMatchObject({
+      applied: true,
+      taskboard: {
+        column: "In Review"
+      },
+      workItemUpdate: {
+        id: 123
+      },
+      taskboardColumnUpdate: {
+        column: "In Review"
+      }
+    });
+    expect(calls.map((call) => call.init.method)).toEqual([
+      "GET",
+      "GET",
+      "GET",
+      "PATCH",
+      "PATCH"
+    ]);
+    expect(JSON.parse(String(calls[3]?.init.body))).toContainEqual({
+      op: "add",
+      path: "/fields/System.State",
+      value: "Active"
+    });
+    expect(JSON.parse(String(calls[4]?.init.body))).toEqual({
+      newColumn: "In Review"
+    });
+  });
+
+  it("builds and reads the current team iteration request", () => {
+    const request = currentIterationRequest({
+      ...testConfig,
+      team: "Delivery Team"
+    });
+
+    expect(request.method).toBe("GET");
+    expect(request.url).toContain("Example%20Project/Delivery%20Team/_apis/work");
+    expect(request.url).toContain("%24timeframe=current");
+    expect(
+      selectCurrentIterationPath({
+        value: [
+          {
+            path: "Example Project\\Previous",
+            attributes: { timeFrame: "past" }
+          },
+          {
+            path: "Example Project\\Sprint 13",
+            attributes: { timeFrame: "current" }
+          }
+        ]
+      })
+    ).toBe("Example Project\\Sprint 13");
   });
 
   it("checks the configured project before applying comments", async () => {

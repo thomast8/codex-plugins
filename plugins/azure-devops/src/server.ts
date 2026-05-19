@@ -14,6 +14,7 @@ import { runLocalOAuthLogin } from "./localOAuth.js";
 import {
   addWorkItemComment,
   createWorkItem,
+  getWorkTrackingRules,
   getWorkItem,
   searchWorkItems,
   updateWorkItem
@@ -39,6 +40,11 @@ export interface ServerOptions {
 
 const stringArraySchema = z.array(z.string().min(1)).max(50);
 const fieldMapSchema = z.record(z.string().min(1), z.unknown());
+const lifecycleEventSchema = z.enum([
+  "start_work",
+  "reviews_requested",
+  "complete_work"
+]);
 
 const searchWorkItemsSchema = z.object({
   wiql: z.string().optional(),
@@ -56,16 +62,17 @@ const createWorkItemSchema = z.object({
   assignedTo: z.string().optional(),
   tags: stringArraySchema.optional(),
   fields: fieldMapSchema.optional(),
+  state: z.string().optional(),
+  lifecycleEvent: lifecycleEventSchema.optional(),
+  preferCurrentIteration: z.boolean().default(true),
   apply: z.boolean().default(false)
 });
 
 const updateWorkItemSchema = z.object({
   id: z.number().int().positive(),
   fields: fieldMapSchema.optional(),
-  lifecycleEvent: z
-    .enum(["start_work", "reviews_requested", "complete_work"])
-    .optional(),
   state: z.string().optional(),
+  lifecycleEvent: lifecycleEventSchema.optional(),
   assignedTo: z.string().optional(),
   tags: stringArraySchema.optional(),
   apply: z.boolean().default(false)
@@ -125,6 +132,7 @@ const getPullRequestSchema = z.object({
 const configureConnectionSchema = z.object({
   orgUrl: z.string().url(),
   project: z.string().min(1),
+  team: z.string().min(1).optional(),
   repositories: stringArraySchema.optional(),
   requestTimeoutMs: z.number().int().positive().optional(),
   maxPages: z.number().int().positive().optional()
@@ -210,6 +218,9 @@ export function createAzureDevOpsServer(options: ServerOptions = {}): McpServer 
             orgUrl: parsed.orgUrl,
             project: parsed.project
           };
+          if (parsed.team !== undefined) {
+            storedConfig.team = parsed.team;
+          }
           if (parsed.repositories !== undefined) {
             storedConfig.repositories = parsed.repositories;
           }
@@ -226,6 +237,7 @@ export function createAzureDevOpsServer(options: ServerOptions = {}): McpServer 
             config: {
               orgUrl: config.orgUrl,
               project: config.project,
+              team: config.team,
               repositories: config.repositories,
               requestTimeoutMs: config.requestTimeoutMs,
               maxPages: config.maxPages
@@ -286,11 +298,22 @@ export function createAzureDevOpsServer(options: ServerOptions = {}): McpServer 
   );
 
   server.registerTool(
+    "ado_get_work_tracking_rules",
+    {
+      title: "Get Azure Boards Work Tracking Rules",
+      description:
+        "Read the plugin-defined Azure Boards lifecycle events, current iteration default, and create-state behavior.",
+      inputSchema: z.object({})
+    },
+    async () => handleTool(async () => getWorkTrackingRules())
+  );
+
+  server.registerTool(
     "ado_create_work_item",
     {
       title: "Create Azure DevOps Work Item",
       description:
-        "Preview or create an Azure Boards work item. Defaults to preview.",
+        "Preview or create an Azure Boards work item. Defaults to preview, prefers the current team iteration, and defers requested lifecycle state moves until after creation.",
       inputSchema: createWorkItemSchema
     },
     async (input) =>
@@ -304,7 +327,7 @@ export function createAzureDevOpsServer(options: ServerOptions = {}): McpServer 
     {
       title: "Update Azure DevOps Work Item",
       description:
-        "Preview or update fields or lifecycle on an Azure Boards work item. Defaults to preview.",
+        "Preview or update fields or lifecycle on an Azure Boards work item. Defaults to preview and supports plugin-defined lifecycle events such as start_work and reviews_requested.",
       inputSchema: updateWorkItemSchema
     },
     async (input) =>

@@ -90,6 +90,7 @@ describe("plugin config", () => {
 
         expect(names).toContain("ado_setup_status");
         expect(names).toContain("ado_search_work_items");
+        expect(names).toContain("ado_get_work_tracking_rules");
       } finally {
         await client.close();
       }
