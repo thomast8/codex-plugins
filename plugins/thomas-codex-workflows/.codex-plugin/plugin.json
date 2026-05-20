@@ -1,7 +1,7 @@
 {
   "name": "thomas-codex-workflows",
   "version": "0.1.0",
-  "description": "Personal Codex workflow hooks ported from the Claude Code setup: GitNexus maintenance, non-mutating GitHub auth checks, branch safety, and worktree hooks.",
+  "description": "Personal Codex workflow hooks ported from the Claude Code setup: GitNexus maintenance, PR creation reminders, and worktree hooks.",
   "author": {
     "name": "Thomas Tiotto",
     "url": "https://github.com/thomast8"

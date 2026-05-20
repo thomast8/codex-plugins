@@ -56,7 +56,7 @@ Codex discovers the marketplace from `.agents/plugins/marketplace.json`; bundled
 
 - `plugins/azure-devops`: Azure Boards and Azure Repos tools with local stdio support and hosted Microsoft Entra OAuth support.
 - `plugins/github-local-ops`: local GitHub workflows for repos, PRs, issues, Actions, releases, and publishing, backed by the GitHub CLI and git.
-- `plugins/thomas-codex-workflows`: personal repo-safety hooks for GitNexus maintenance, GitHub auth switching, branch safety, PR creation reminders, and worktree lifecycle setup.
+- `plugins/thomas-codex-workflows`: personal repo-safety hooks for GitNexus maintenance, PR creation reminders, and worktree lifecycle setup.
 - `plugins/thomas-codex-skills`: active personal skills packaged as one marketplace plugin.
 
 Each plugin includes `plugin.descriptor.json`, a public-safe explanatory manifest with the plugin's purpose, when to use it, exposed skills/MCP servers/hooks, safety model, excluded state, and install notes. `npm run verify:plugin-descriptors` checks that these descriptors match the official Codex `plugin.json` entrypoints.

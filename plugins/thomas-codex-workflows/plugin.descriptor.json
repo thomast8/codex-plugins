@@ -2,12 +2,10 @@
   "schemaVersion": 1,
   "name": "thomas-codex-workflows",
   "displayName": "Thomas Codex Workflows",
-  "summary": "Personal Codex hooks for repo safety, GitNexus upkeep, non-mutating GitHub account checks, and worktree lifecycle support.",
+  "summary": "Personal Codex hooks for GitNexus upkeep, PR creation reminders, and worktree lifecycle support.",
   "purpose": "Use this plugin to make ordinary Codex sessions safer and more context-aware through hooks that run around shell commands, search commands, session start, and worktree create/remove events.",
   "whenToUse": [
     "Keep GitNexus indexes fresh and inject graph context during code exploration.",
-    "Guard main-branch commits and pushes unless the user explicitly allows them.",
-    "Check GitHub auth context without changing the global gh active account.",
     "Prepare and clean up worktree metadata during worktree lifecycle events."
   ],
   "surfaces": {
