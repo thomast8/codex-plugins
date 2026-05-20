@@ -11,6 +11,7 @@ const serverConfig = mcpConfig["github-local-ops"];
 const fakeBinDir = fs.mkdtempSync(join(os.tmpdir(), "github-local-ops-contract-"));
 const commandLog = join(fakeBinDir, "commands.jsonl");
 const replyLog = join(fakeBinDir, "replies.jsonl");
+const reviewLog = join(fakeBinDir, "reviews.jsonl");
 const reviewerLog = join(fakeBinDir, "reviewers.jsonl");
 const bodyFile = join(fakeBinDir, "body.txt");
 const checksFile = join(fakeBinDir, "checks.txt");
@@ -335,6 +336,40 @@ if (args[0] === "api" && args[1] === "--method" && args[2] === "POST" && args[3]
   }));
   process.exit(0);
 }
+if (args[0] === "api" && args[1] === "--method" && args[2] === "POST" && args[3] === "repos/owner/repo/pulls/1/reviews") {
+  const input = fs.readFileSync(0, "utf8");
+  const payload = JSON.parse(input);
+  writeJsonl(process.env.FAKE_REVIEW_LOG, { payload });
+  console.log(JSON.stringify({
+    id: 80,
+    node_id: "PRR_80",
+    body: payload.body || "",
+    state: "COMMENTED",
+    html_url: "https://github.com/owner/repo/pull/1#pullrequestreview-80"
+  }));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1]?.startsWith("repos/owner/repo/pulls/1/reviews/80/comments")) {
+  const current = state();
+  if (current.reviewReadbackMode === "fail") {
+    console.error("readback failed after review creation");
+    process.exit(1);
+  }
+  const reviews = readJsonl(process.env.FAKE_REVIEW_LOG);
+  const payload = reviews.at(-1)?.payload || { comments: [] };
+  console.log(JSON.stringify(payload.comments.map((comment, index) => ({
+    id: 8100 + index,
+    body: comment.body,
+    path: comment.path,
+    line: current.reviewReadbackMode === "mismatch" ? comment.line + 1 : comment.line,
+    start_line: comment.start_line,
+    side: comment.side,
+    start_side: comment.start_side,
+    html_url: "https://github.com/owner/repo/pull/1#discussion_r" + (8100 + index),
+    url: "https://api.github.com/repos/owner/repo/pulls/comments/" + (8100 + index)
+  }))));
+  process.exit(0);
+}
 if (args[0] === "pr" && args[1] === "list") {
   const current = state();
   const head = current.head || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -533,6 +568,7 @@ const child = spawn(serverConfig.command, serverConfig.args, {
     GITHUB_LOCAL_OPS_GIT_BIN: fakeGit,
     FAKE_COMMAND_LOG: commandLog,
     FAKE_REPLY_LOG: replyLog,
+    FAKE_REVIEW_LOG: reviewLog,
     FAKE_REVIEWER_LOG: reviewerLog,
     FAKE_BODY_FILE: bodyFile,
     FAKE_CHECKS_FILE: checksFile,
@@ -615,6 +651,27 @@ function readCommandLog() {
     .map((line) => JSON.parse(line));
 }
 
+function readJsonlFile(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  return fs.readFileSync(filePath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+async function expectToolError(toolName, args, expectedText) {
+  const response = await request("tools/call", {
+    name: toolName,
+    arguments: args
+  });
+  if (response.result?.isError !== true || !textContent(response).includes(expectedText)) {
+    throw new Error(`${toolName} should fail with ${expectedText}`);
+  }
+}
+
 async function main() {
   const initialize = await request("initialize", {
     protocolVersion: "2025-06-18",
@@ -637,6 +694,10 @@ async function main() {
     if (!names.includes(name)) {
       throw new Error(`Missing expected tool: ${name}`);
     }
+  }
+  const mutationPreviewTool = toolsResult.result.tools.find((tool) => tool.name === "github_mutation_preview");
+  if (!mutationPreviewTool?.inputSchema?.properties?.operation?.enum?.includes("pull_request_review")) {
+    throw new Error("github_mutation_preview schema did not expose pull_request_review");
   }
 
   const status = await request("tools/call", {
@@ -909,6 +970,249 @@ async function main() {
     throw new Error("inline review comment preview should not invoke gh or git");
   }
 
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        comments: []
+      }
+    },
+    "payload.comments must contain between 1 and 50 comments"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        comments: Array.from({ length: 51 }, () => ({
+          path: "src/app.py",
+          line: 1,
+          body: "Too many"
+        }))
+      }
+    },
+    "payload.comments must contain between 1 and 50 comments"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        comments: [{ path: "src/app.py", line: 1 }]
+      }
+    },
+    "payload.comments[0].body is required"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        comments: [{ path: "src/app.py", line: 1, side: "CENTER", body: "Invalid side" }]
+      }
+    },
+    "payload.comments[0].side must be LEFT or RIGHT"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        event: "REQUEST_CHANGES",
+        comments: [{ path: "src/app.py", line: 1, body: "Unsupported event" }]
+      }
+    },
+    "payload.event must be COMMENT"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        comments: [{ path: "src/app.py", line: 1, body: "Missing review summary" }]
+      }
+    },
+    "payload.body is required"
+  );
+
+  const batchPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        body: "Batch review summary",
+        comments: [
+          {
+            path: "src/app.py",
+            line: 42,
+            body: "First batch comment."
+          },
+          {
+            path: "src/app.py",
+            startLine: 44,
+            line: 45,
+            side: "RIGHT",
+            body: "Second batch comment."
+          }
+        ]
+      }
+    }
+  });
+  const batchPreviewJson = jsonContent(batchPreview);
+  if (
+    batchPreviewJson.operation !== "pull_request_review"
+    || !batchPreviewJson.approvalToken
+    || batchPreviewJson.request?.endpoint !== "repos/owner/repo/pulls/1/reviews"
+    || batchPreviewJson.requestBody?.comments?.length !== 2
+    || batchPreviewJson.requestBody?.comments?.[1]?.start_line !== 44
+    || !batchPreviewJson.command?.args?.includes("--input")
+  ) {
+    throw new Error("pull_request_review preview did not expose the expected batch request");
+  }
+  if (readCommandLog().length !== callsBeforeMutationPreview) {
+    throw new Error("pull_request_review preview should not invoke gh or git");
+  }
+
+  const callsBeforeBatchExecute = readCommandLog().length;
+  const batchExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: {
+      approvalToken: batchPreviewJson.approvalToken
+    }
+  });
+  const batchExecuteJson = jsonContent(batchExecute);
+  const batchCalls = readCommandLog()
+    .slice(callsBeforeBatchExecute)
+    .filter((call) => call.bin === "gh" && call.args[0] === "api");
+  if (
+    batchCalls.length !== 2
+    || batchCalls[0].args[1] !== "--method"
+    || batchCalls[0].args[2] !== "POST"
+    || batchCalls[0].args[3] !== "repos/owner/repo/pulls/1/reviews"
+    || !batchCalls[0].args.includes("--input")
+    || batchCalls[1].args[1] !== "repos/owner/repo/pulls/1/reviews/80/comments?per_page=100"
+  ) {
+    throw new Error("pull_request_review execute did not create one review and read back its comments");
+  }
+  const reviewPayload = readJsonlFile(reviewLog).at(-1)?.payload;
+  if (
+    reviewPayload?.comments?.length !== 2
+    || reviewPayload.comments[0]?.body !== "First batch comment."
+    || reviewPayload.comments[1]?.start_line !== 44
+  ) {
+    throw new Error("pull_request_review execute did not pass the expected JSON payload on stdin");
+  }
+  if (
+    batchExecuteJson.review?.id !== 80
+    || batchExecuteJson.readbackVerified !== true
+    || batchExecuteJson.postedCommentCount !== 2
+    || batchExecuteJson.comments?.some((comment) => comment.exactMatch !== true)
+  ) {
+    throw new Error("pull_request_review execute did not return review readback evidence");
+  }
+
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    reviewReadbackMode: "mismatch"
+  }), "utf8");
+  const mismatchedBatchPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        body: "Batch review summary",
+        comments: [{ path: "src/app.py", line: 42, body: "Mismatch batch comment." }]
+      }
+    }
+  });
+  const mismatchedBatchExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: {
+      approvalToken: jsonContent(mismatchedBatchPreview).approvalToken
+    }
+  });
+  const mismatchedBatchExecuteJson = jsonContent(mismatchedBatchExecute);
+  if (
+    mismatchedBatchExecuteJson.writeSucceeded !== true
+    || mismatchedBatchExecuteJson.readbackVerified !== false
+    || mismatchedBatchExecuteJson.comments?.[0]?.lineMatches !== false
+    || !mismatchedBatchExecuteJson.warnings?.[0]?.includes("could not be verified exactly")
+  ) {
+    throw new Error("pull_request_review execute should report exact readback mismatch evidence");
+  }
+
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    reviewReadbackMode: "fail"
+  }), "utf8");
+  const failedReadbackBatchPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        body: "Batch review summary",
+        comments: [{ path: "src/app.py", line: 42, body: "Readback failure batch comment." }]
+      }
+    }
+  });
+  const failedReadbackBatchExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: {
+      approvalToken: jsonContent(failedReadbackBatchPreview).approvalToken
+    }
+  });
+  const failedReadbackBatchExecuteJson = jsonContent(failedReadbackBatchExecute);
+  if (
+    failedReadbackBatchExecute.result?.isError === true
+    || failedReadbackBatchExecuteJson.writeSucceeded !== true
+    || failedReadbackBatchExecuteJson.readbackVerified !== false
+    || failedReadbackBatchExecuteJson.review?.id !== 80
+    || !failedReadbackBatchExecuteJson.warnings?.[0]?.includes("Do not retry blindly")
+  ) {
+    throw new Error("pull_request_review execute should return created review evidence when readback fails");
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292
+  }), "utf8");
+
+  const callsBeforeInlineEditPreview = readCommandLog().length;
   const inlineEditPreview = await request("tools/call", {
     name: "github_mutation_preview",
     arguments: {
@@ -927,10 +1231,11 @@ async function main() {
   ) {
     throw new Error("inline review comment edit preview did not build expected command");
   }
-  if (readCommandLog().length !== callsBeforeMutationPreview) {
+  if (readCommandLog().length !== callsBeforeInlineEditPreview) {
     throw new Error("inline review comment edit preview should not invoke gh or git");
   }
 
+  const callsBeforeIssueCommentEditPreview = readCommandLog().length;
   const issueCommentEditPreview = await request("tools/call", {
     name: "github_mutation_preview",
     arguments: {
@@ -949,7 +1254,7 @@ async function main() {
   ) {
     throw new Error("issue comment edit preview did not build expected command");
   }
-  if (readCommandLog().length !== callsBeforeMutationPreview) {
+  if (readCommandLog().length !== callsBeforeIssueCommentEditPreview) {
     throw new Error("issue comment edit preview should not invoke gh or git");
   }
 

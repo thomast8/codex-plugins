@@ -433,6 +433,7 @@ const TOOLS = [
         type: "string",
         enum: [
           "pr_comment",
+          "pull_request_review",
           "pull_request_review_comment",
           "pull_request_review_comment_edit",
           "review_thread_reply",
@@ -492,7 +493,8 @@ function run(bin, args, options = {}) {
     cwd,
     encoding: "utf8",
     maxBuffer: options.maxBuffer || 20 * 1024 * 1024,
-    env
+    env,
+    input: options.input
   });
   const command = [bin, ...args.map(String)];
   if (result.error) {
@@ -1127,6 +1129,52 @@ function normalizeApprovedReplies(value, options = {}) {
       throw new Error(`approvedReplies[${index}].body is required`);
     }
     return { commentId, body };
+  });
+}
+
+function normalizeReviewSide(value, name) {
+  const side = (value == null ? "RIGHT" : requireString(String(value), name)).toUpperCase();
+  if (!["LEFT", "RIGHT"].includes(side)) {
+    throw new Error(`${name} must be LEFT or RIGHT`);
+  }
+  return side;
+}
+
+function normalizePullRequestReviewComments(value) {
+  if (!Array.isArray(value)) {
+    throw new Error("payload.comments must be an array.");
+  }
+  if (value.length < 1 || value.length > 50) {
+    throw new Error("payload.comments must contain between 1 and 50 comments.");
+  }
+  return value.map((comment, index) => {
+    if (!comment || typeof comment !== "object" || Array.isArray(comment)) {
+      throw new Error(`payload.comments[${index}] must be an object.`);
+    }
+    const path = requireString(String(comment.path ?? ""), `payload.comments[${index}].path`);
+    const line = Number(requirePositiveInteger(comment.line, `payload.comments[${index}].line`));
+    const body = requireString(String(comment.body ?? ""), `payload.comments[${index}].body`);
+    const side = normalizeReviewSide(comment.side, `payload.comments[${index}].side`);
+    const normalized = { path, line, side, body };
+    if (comment.startLine != null || comment.start_line != null || comment.startSide != null || comment.start_side != null) {
+      if (comment.startLine == null && comment.start_line == null) {
+        throw new Error(`payload.comments[${index}].startLine is required when startSide is provided.`);
+      }
+      const startLine = Number(requirePositiveInteger(comment.startLine ?? comment.start_line, `payload.comments[${index}].startLine`));
+      if (startLine > line) {
+        throw new Error(`payload.comments[${index}].startLine must be less than or equal to line.`);
+      }
+      const startSide = normalizeReviewSide(
+        comment.startSide ?? comment.start_side ?? side,
+        `payload.comments[${index}].startSide`
+      );
+      if (startSide !== side) {
+        throw new Error(`payload.comments[${index}].startSide must match side.`);
+      }
+      normalized.start_line = startLine;
+      normalized.start_side = startSide;
+    }
+    return normalized;
   });
 }
 
@@ -3376,6 +3424,50 @@ function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccou
         riskNotes: [...riskNotes]
       };
     }
+    case "pull_request_review": {
+      if (!repo) {
+        throw new Error("payload.repo is required for pull_request_review");
+      }
+      const number = requirePositiveInteger(payload.number, "payload.number");
+      const commitId = requireNonOptionString(
+        payload.commitId ?? payload.commit_id,
+        "payload.commitId"
+      ).toLowerCase();
+      if (!/^[0-9a-f]{40}$/.test(commitId)) {
+        throw new Error("payload.commitId must be a full 40-character commit SHA.");
+      }
+      const event = (payload.event == null ? "COMMENT" : requireString(payload.event, "payload.event")).toUpperCase();
+      if (event !== "COMMENT") {
+        throw new Error("payload.event must be COMMENT for pull_request_review batch comments.");
+      }
+      const comments = normalizePullRequestReviewComments(payload.comments);
+      const body = requireString(String(payload.body ?? ""), "payload.body");
+      const requestBody = {
+        commit_id: commitId,
+        event,
+        body,
+        comments
+      };
+      const endpoint = `repos/${repo}/pulls/${number}/reviews`;
+      riskNotes.push(`Creates one pull request review containing ${comments.length} inline comment(s).`);
+      riskNotes.push("Only COMMENT review events are supported by this batch operation.");
+      return {
+        kind: "gh",
+        bin: GH_BIN,
+        args: ["api", "--method", "POST", endpoint, "--input", "-"],
+        cwd,
+        repo,
+        githubAccount: account,
+        number,
+        request: {
+          method: "POST",
+          endpoint
+        },
+        requestBody,
+        stdin: `${JSON.stringify(requestBody)}\n`,
+        riskNotes: [...riskNotes]
+      };
+    }
     case "pull_request_review_comment_edit": {
       if (!repo) {
         throw new Error("payload.repo is required for pull_request_review_comment_edit");
@@ -3786,7 +3878,9 @@ function hashMutation(plan) {
     number: plan.number || null,
     approvedReplies: plan.approvedReplies || null,
     prBody: plan.prBody || null,
-    reviewers: plan.reviewers || null
+    reviewers: plan.reviewers || null,
+    requestBody: plan.requestBody || null,
+    stdin: plan.stdin || null
   })).digest("hex");
 }
 
@@ -3808,7 +3902,7 @@ async function githubMutationPreview(input = {}) {
     expiresAt
   };
   approvals.set(token, approval);
-  return {
+  const response = {
     operation,
     payload,
     command: {
@@ -3824,6 +3918,229 @@ async function githubMutationPreview(input = {}) {
     approvalText: PUBLIC_WRITES_ENABLED
       ? `Approve ${operation} before calling github_mutation_execute with this token.`
       : "Execution is disabled in this MCP process. Start the server with --enable-public-writes or set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat to allow execute after preview."
+  };
+  if (plan.request != null) {
+    response.request = plan.request;
+  }
+  if (plan.requestBody != null) {
+    response.requestBody = plan.requestBody;
+  }
+  return response;
+}
+
+function optionalNumber(value) {
+  if (value == null) {
+    return null;
+  }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function optionalUpperString(value) {
+  return value == null ? null : String(value).toUpperCase();
+}
+
+function reviewCommentLine(comment) {
+  return optionalNumber(comment?.line ?? comment?.original_line ?? comment?.originalLine);
+}
+
+function reviewCommentStartLine(comment) {
+  return optionalNumber(
+    comment?.start_line
+      ?? comment?.original_start_line
+      ?? comment?.startLine
+      ?? comment?.originalStartLine
+  );
+}
+
+function reviewCommentSide(comment) {
+  return optionalUpperString(comment?.side);
+}
+
+function reviewCommentStartSide(comment) {
+  return optionalUpperString(comment?.start_side ?? comment?.startSide);
+}
+
+function reviewCommentReadbackEvidence(expected, posted, index) {
+  const expectedStartLine = expected.start_line ?? null;
+  const expectedStartSide = expected.start_side ?? null;
+  const evidence = {
+    index,
+    expected: {
+      path: expected.path,
+      line: expected.line,
+      startLine: expectedStartLine,
+      side: expected.side,
+      startSide: expectedStartSide,
+      body: expected.body
+    },
+    posted: posted == null
+      ? null
+      : {
+          id: posted.id ?? posted.databaseId ?? null,
+          url: posted.html_url || posted.url || null,
+          path: posted.path || null,
+          line: reviewCommentLine(posted),
+          startLine: reviewCommentStartLine(posted),
+          side: reviewCommentSide(posted),
+          startSide: reviewCommentStartSide(posted),
+          body: posted.body || null
+        },
+    bodyMatches: posted?.body === expected.body,
+    pathMatches: posted?.path === expected.path,
+    lineMatches: reviewCommentLine(posted) === expected.line,
+    startLineMatches: reviewCommentStartLine(posted) === expectedStartLine,
+    sideMatches: reviewCommentSide(posted) === expected.side,
+    startSideMatches: reviewCommentStartSide(posted) === expectedStartSide
+  };
+  evidence.exactMatch = Boolean(
+    evidence.bodyMatches
+    && evidence.pathMatches
+    && evidence.lineMatches
+    && evidence.startLineMatches
+    && evidence.sideMatches
+    && evidence.startSideMatches
+    && evidence.posted?.id != null
+    && evidence.posted?.url != null
+  );
+  return evidence;
+}
+
+function exactReviewCommentMatch(expected, posted) {
+  return reviewCommentReadbackEvidence(expected, posted, 0).exactMatch;
+}
+
+function matchReviewCommentReadback(expected, comments, index, usedIndexes) {
+  const exactIndex = comments.findIndex((comment, candidateIndex) => (
+    !usedIndexes.has(candidateIndex) && exactReviewCommentMatch(expected, comment)
+  ));
+  if (exactIndex !== -1) {
+    usedIndexes.add(exactIndex);
+    return reviewCommentReadbackEvidence(expected, comments[exactIndex], index);
+  }
+
+  const looseIndex = comments.findIndex((comment, candidateIndex) => (
+    !usedIndexes.has(candidateIndex)
+    && comment?.body === expected.body
+    && comment?.path === expected.path
+    && reviewCommentLine(comment) === expected.line
+  ));
+  const sameSlotIndex = !usedIndexes.has(index) && comments[index] != null ? index : -1;
+  const candidateIndex = looseIndex !== -1 ? looseIndex : sameSlotIndex;
+  if (candidateIndex !== -1) {
+    usedIndexes.add(candidateIndex);
+    return reviewCommentReadbackEvidence(expected, comments[candidateIndex], index);
+  }
+
+  return reviewCommentReadbackEvidence(expected, null, index);
+}
+
+function pullRequestReviewBaseResponse(plan, result, review, input = {}) {
+  return {
+    operation: "pull_request_review",
+    repository: plan.repo,
+    number: Number(plan.number),
+    command: {
+      executable: plan.bin,
+      args: plan.args,
+      cwd: plan.cwd,
+      shellPreview: commandPreview([plan.bin, ...plan.args])
+    },
+    request: plan.request,
+    requestBody: plan.requestBody,
+    writeSucceeded: true,
+    review: {
+      id: review.id ?? null,
+      nodeId: review.node_id || null,
+      url: review.html_url || review.url || null,
+      state: review.state || null,
+      body: review.body || null
+    },
+    authSelection: result.auth || null,
+    stdout: truncate(result.stdout, input.maxBytes || DEFAULT_MAX_BYTES),
+    stderr: truncate(result.stderr, input.maxBytes || DEFAULT_MAX_BYTES),
+    status: result.status
+  };
+}
+
+async function executePullRequestReviewPlan(plan, input = {}) {
+  const result = runGh(plan.args, {
+    cwd: plan.cwd,
+    maxBuffer: 20 * 1024 * 1024,
+    repoName: plan.repo,
+    githubAccount: plan.githubAccount,
+    requireScopedAuth: true,
+    input: plan.stdin,
+    json: true
+  });
+  const review = result.data || {};
+  if (review.id == null) {
+    return {
+      ...pullRequestReviewBaseResponse(plan, result, review, input),
+      readbackVerified: false,
+      postedCommentCount: null,
+      comments: [],
+      warnings: [
+        "GitHub create-review response did not include a review id for comment readback. The review may have been created; do not retry blindly."
+      ]
+    };
+  }
+  let readbackResult;
+  try {
+    readbackResult = runGh(
+      ["api", `repos/${plan.repo}/pulls/${plan.number}/reviews/${review.id}/comments?per_page=100`],
+      {
+        cwd: plan.cwd,
+        maxBuffer: 20 * 1024 * 1024,
+        repoName: plan.repo,
+        githubAccount: plan.githubAccount,
+        requireScopedAuth: true,
+        json: true
+      }
+    );
+  } catch (error) {
+    return {
+      ...pullRequestReviewBaseResponse(plan, result, review, input),
+      readbackVerified: false,
+      postedCommentCount: null,
+      comments: [],
+      readbackError: {
+        message: error instanceof Error ? error.message : String(error),
+        command: error?.command || null,
+        stdout: truncate(error?.stdout || "", input.maxBytes || DEFAULT_MAX_BYTES),
+        stderr: truncate(error?.stderr || "", input.maxBytes || DEFAULT_MAX_BYTES),
+        status: error?.status ?? null
+      },
+      warnings: [
+        "The review was created, but comment readback failed. Do not retry blindly because retrying may duplicate public review comments."
+      ]
+    };
+  }
+  const readbackComments = Array.isArray(readbackResult.data) ? readbackResult.data : [];
+  const expectedComments = plan.requestBody.comments || [];
+  const usedIndexes = new Set();
+  const comments = expectedComments.map((expected, index) =>
+    matchReviewCommentReadback(expected, readbackComments, index, usedIndexes)
+  );
+  const readbackVerified = (
+    readbackComments.length >= expectedComments.length
+    && comments.every((comment) => comment.exactMatch)
+  );
+  const warnings = readbackVerified
+    ? []
+    : ["One or more review comments could not be verified exactly in readback. Inspect the returned comment evidence before taking follow-up action."];
+  return {
+    ...pullRequestReviewBaseResponse(plan, result, review, input),
+    readbackVerified,
+    postedCommentCount: readbackComments.length,
+    comments,
+    readbackCommand: {
+      executable: GH_BIN,
+      args: readbackResult.command.slice(1),
+      cwd: readbackResult.cwd,
+      shellPreview: commandPreview(readbackResult.command)
+    },
+    warnings
   };
 }
 
@@ -3846,13 +4163,17 @@ async function githubMutationExecute(input = {}) {
   if (approval.plan.kind === "review_handoff") {
     return executeReviewHandoffPlan(approval.plan);
   }
+  if (approval.operation === "pull_request_review") {
+    return executePullRequestReviewPlan(approval.plan, input);
+  }
   const result = approval.plan.kind === "gh"
     ? runGh(approval.plan.args, {
       cwd: approval.plan.cwd,
       maxBuffer: 20 * 1024 * 1024,
       repoName: approval.plan.repo,
       githubAccount: approval.plan.githubAccount,
-      requireScopedAuth: true
+      requireScopedAuth: true,
+      input: approval.plan.stdin
     })
     : run(approval.plan.bin, approval.plan.args, { cwd: approval.plan.cwd, maxBuffer: 20 * 1024 * 1024 });
   return {
