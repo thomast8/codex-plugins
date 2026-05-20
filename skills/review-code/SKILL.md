@@ -121,6 +121,16 @@ why it matters, and the closest evidence they used instead. Their final lane
 reports should use the same reviewer-shaped evidence fields for any confirmed
 finding.
 
+## Public Review Comments
+
+The reproduction rubric is for Codex chat/final review output only. Do not paste
+rubric tables, reproduction matrices, or internal review ledgers into GitHub,
+Azure DevOps, Slack, email, or any other public/provider comment. When posting a
+confirmed finding to GitHub, rewrite it as a short human reviewer comment tied
+to the line: state the problem, give one concrete impact or example when useful,
+and ask for the fix in natural prose. Public comments should not contain table
+headers such as `Severity`, `Claim`, `Expected`, `Observed`, or `Failure Signal`.
+
 ## Diff scope
 
 The coordinator owns repo freshness and diff selection before any review lane starts.

@@ -46,6 +46,6 @@ Before requesting re-review, check for approved but unposted replies. If any exi
 ## Public Reply Style
 
 - One or two casual sentences.
-- No bullets, bold text, numbered lists, or commit SHAs.
+- No rubric tables, reproduction matrices, approval ledgers, bullets, bold text, numbered lists, or commit SHAs.
 - Say what changed, what was checked, or why a suggestion is not applicable.
 - Do not resolve reviewer-authored threads.

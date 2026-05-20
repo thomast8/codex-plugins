@@ -909,6 +909,50 @@ async function main() {
     throw new Error("inline review comment preview should not invoke gh or git");
   }
 
+  const inlineEditPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "pull_request_review_comment_edit",
+      payload: {
+        repo: "owner/repo",
+        commentId: 456,
+        body: "Edited inline contract preview only."
+      }
+    }
+  });
+  const inlineEditPreviewJson = jsonContent(inlineEditPreview);
+  if (
+    inlineEditPreviewJson.operation !== "pull_request_review_comment_edit"
+    || !inlineEditPreviewJson.command?.args?.includes("repos/owner/repo/pulls/comments/456")
+  ) {
+    throw new Error("inline review comment edit preview did not build expected command");
+  }
+  if (readCommandLog().length !== callsBeforeMutationPreview) {
+    throw new Error("inline review comment edit preview should not invoke gh or git");
+  }
+
+  const issueCommentEditPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "issue_comment_edit",
+      payload: {
+        repo: "owner/repo",
+        commentId: 789,
+        body: "Edited issue contract preview only."
+      }
+    }
+  });
+  const issueCommentEditPreviewJson = jsonContent(issueCommentEditPreview);
+  if (
+    issueCommentEditPreviewJson.operation !== "issue_comment_edit"
+    || !issueCommentEditPreviewJson.command?.args?.includes("repos/owner/repo/issues/comments/789")
+  ) {
+    throw new Error("issue comment edit preview did not build expected command");
+  }
+  if (readCommandLog().length !== callsBeforeMutationPreview) {
+    throw new Error("issue comment edit preview should not invoke gh or git");
+  }
+
   fs.writeFileSync(stateFile, JSON.stringify({
     detached: false,
     head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

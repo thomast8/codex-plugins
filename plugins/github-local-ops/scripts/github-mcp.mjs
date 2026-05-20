@@ -434,10 +434,12 @@ const TOOLS = [
         enum: [
           "pr_comment",
           "pull_request_review_comment",
+          "pull_request_review_comment_edit",
           "review_thread_reply",
           "pr_edit",
           "request_reviewers",
           "issue_comment",
+          "issue_comment_edit",
           "issue_label",
           "workflow_dispatch",
           "rerun_failed_workflow",
@@ -3374,6 +3376,33 @@ function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccou
         riskNotes: [...riskNotes]
       };
     }
+    case "pull_request_review_comment_edit": {
+      if (!repo) {
+        throw new Error("payload.repo is required for pull_request_review_comment_edit");
+      }
+      const commentId = requirePositiveInteger(
+        payload.commentId ?? payload.comment_id,
+        "payload.commentId"
+      );
+      const body = requireString(payload.body, "payload.body");
+      riskNotes.push("Edits an existing inline pull request review comment.");
+      return {
+        kind: "gh",
+        bin: GH_BIN,
+        args: [
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${repo}/pulls/comments/${commentId}`,
+          "-f",
+          `body=${body}`
+        ],
+        cwd,
+        repo,
+        githubAccount: account,
+        riskNotes: [...riskNotes]
+      };
+    }
     case "review_thread_reply": {
       const threadId = requireString(payload.threadId, "payload.threadId");
       const body = requireString(payload.body, "payload.body");
@@ -3425,6 +3454,33 @@ function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccou
       const body = requireString(payload.body, "payload.body");
       riskNotes.push("Adds an issue conversation comment.");
       return command(["issue", "comment", number, "--body", body]);
+    }
+    case "issue_comment_edit": {
+      if (!repo) {
+        throw new Error("payload.repo is required for issue_comment_edit");
+      }
+      const commentId = requirePositiveInteger(
+        payload.commentId ?? payload.comment_id,
+        "payload.commentId"
+      );
+      const body = requireString(payload.body, "payload.body");
+      riskNotes.push("Edits an existing issue or PR conversation comment.");
+      return {
+        kind: "gh",
+        bin: GH_BIN,
+        args: [
+          "api",
+          "--method",
+          "PATCH",
+          `repos/${repo}/issues/comments/${commentId}`,
+          "-f",
+          `body=${body}`
+        ],
+        cwd,
+        repo,
+        githubAccount: account,
+        riskNotes: [...riskNotes]
+      };
     }
     case "issue_label": {
       const number = requirePositiveInteger(payload.number, "payload.number");
