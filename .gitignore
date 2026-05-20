@@ -9,6 +9,10 @@ plugins/azure-devops/dist/*
 coverage/
 *.tsbuildinfo
 .DS_Store
+AGENTS.md
+AGENT.md
+agents.md
+agent.md
 .claude/
 .gitnexus/
 skills/.system/

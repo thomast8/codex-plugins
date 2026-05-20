@@ -22,6 +22,7 @@ const forbiddenPathSegments = [
   "shell_snapshots",
   "state_5.sqlite",
 ];
+const forbiddenGuidanceFileNames = new Set(["AGENTS.md", "AGENT.md", "agents.md", "agent.md"]);
 const forbiddenContent = [
   new RegExp("/Users/" + "thomastiotto"),
   new RegExp("Library/Mobile " + "Documents"),
@@ -71,6 +72,9 @@ function walk(dir) {
       continue;
     }
     const segments = relativePath.split(path.sep);
+    if (forbiddenGuidanceFileNames.has(entry.name)) {
+      findings.push(`${relativePath}: forbidden assistant guidance file`);
+    }
     for (const segment of segments) {
       if (forbiddenPathSegments.includes(segment)) {
         findings.push(`${relativePath}: forbidden local/runtime path segment ${segment}`);
