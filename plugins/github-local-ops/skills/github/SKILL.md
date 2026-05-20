@@ -65,7 +65,8 @@ For all public writes:
 
 ## Write Safety
 
-- Preview before public writes: PR comments, review-thread replies, PR edits, reviewer requests, issue comments, label changes, workflow dispatch, workflow reruns, and release creation.
+- Preview before public writes: PR comments, new inline pull request review comments, review-thread replies, PR edits, reviewer requests, issue comments, label changes, workflow dispatch, workflow reruns, and release creation.
+- For a new inline pull request review comment, use `github_mutation_preview` with operation `pull_request_review_comment` and payload `repo`, `number`, `body`, `commitId`, `path`, `line`, and `side` (`RIGHT` for the head side, `LEFT` for the base side). Use `startLine` and `startSide` only for multi-line comments. After execution, read back with `github_pr_review_threads` and report the discussion URL.
 - Keep public replies short, casual, and specific.
 - Never resolve reviewer-authored review threads; leave resolution to reviewers or maintainers.
 - Do not cite commit SHAs in public replies.
@@ -85,7 +86,7 @@ For all public writes:
 - `github_checks`, `github_actions_runs`: inspect PR checks and workflow runs.
 - `github_pr_handoff_status`: consolidated review-handoff status with PR head SHA, local ahead/behind state, draft state, review requests, human missing-reply threads, bot/CodeQL threads, approved reply readback, checks, and rate-limit evidence.
 - `github_review_handoff_preview`: preview the ordered handoff flow: post approved replies, read back replies, update PR body, re-check CI, then request reviewers. Execution still goes through `github_mutation_execute`.
-- `github_mutation_preview`, `github_mutation_execute`: preview-first write flow with short-lived approval tokens. The bundled plugin manifest enables execution; custom launchers must pass `--enable-public-writes` or set `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`.
+- `github_mutation_preview`, `github_mutation_execute`: preview-first write flow with short-lived approval tokens. Supported operations include PR conversation comments (`pr_comment`), new inline PR review comments (`pull_request_review_comment`), review-thread replies (`review_thread_reply`), PR edits, reviewer requests, issue comments, label changes, workflow dispatch, workflow reruns, and release creation. The bundled plugin manifest enables execution; custom launchers must pass `--enable-public-writes` or set `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`.
 - Local checkout reads do not fetch by default. Pass `autoFetch: true` only after the workflow needs fresh refs; surface `freshness` warnings and fall back to explicit `git fetch --all` when repo policy requires it.
 
 ## Output

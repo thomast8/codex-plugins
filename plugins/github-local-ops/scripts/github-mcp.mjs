@@ -433,6 +433,7 @@ const TOOLS = [
         type: "string",
         enum: [
           "pr_comment",
+          "pull_request_review_comment",
           "review_thread_reply",
           "pr_edit",
           "request_reviewers",
@@ -3313,6 +3314,65 @@ function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccou
       const body = requireString(payload.body, "payload.body");
       riskNotes.push("Adds a PR conversation comment.");
       return command(["pr", "comment", number, "--body", body]);
+    }
+    case "pull_request_review_comment": {
+      if (!repo) {
+        throw new Error("payload.repo is required for pull_request_review_comment");
+      }
+      const number = requirePositiveInteger(payload.number, "payload.number");
+      const body = requireString(payload.body, "payload.body");
+      const commitId = requireNonOptionString(
+        payload.commitId ?? payload.commit_id,
+        "payload.commitId"
+      );
+      const path = requireString(payload.path, "payload.path");
+      const line = requirePositiveInteger(payload.line, "payload.line");
+      const side = (payload.side == null ? "RIGHT" : requireString(payload.side, "payload.side"))
+        .toUpperCase();
+      if (!["LEFT", "RIGHT"].includes(side)) {
+        throw new Error("payload.side must be LEFT or RIGHT");
+      }
+      const args = [
+        "api",
+        "--method",
+        "POST",
+        `repos/${repo}/pulls/${number}/comments`,
+        "-f",
+        `body=${body}`,
+        "-f",
+        `commit_id=${commitId}`,
+        "-f",
+        `path=${path}`,
+        "-F",
+        `line=${line}`,
+        "-f",
+        `side=${side}`
+      ];
+      if (payload.startLine != null || payload.start_line != null) {
+        const startLine = requirePositiveInteger(
+          payload.startLine ?? payload.start_line,
+          "payload.startLine"
+        );
+        const startSide = (
+          payload.startSide == null && payload.start_side == null
+            ? side
+            : requireString(payload.startSide ?? payload.start_side, "payload.startSide")
+        ).toUpperCase();
+        if (!["LEFT", "RIGHT"].includes(startSide)) {
+          throw new Error("payload.startSide must be LEFT or RIGHT");
+        }
+        args.push("-F", `start_line=${startLine}`, "-f", `start_side=${startSide}`);
+      }
+      riskNotes.push("Creates a new inline pull request review comment on a diff line.");
+      return {
+        kind: "gh",
+        bin: GH_BIN,
+        args,
+        cwd,
+        repo,
+        githubAccount: account,
+        riskNotes: [...riskNotes]
+      };
     }
     case "review_thread_reply": {
       const threadId = requireString(payload.threadId, "payload.threadId");

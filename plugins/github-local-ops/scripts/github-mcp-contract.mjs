@@ -877,6 +877,38 @@ async function main() {
     throw new Error("github_mutation_preview should not invoke gh or git");
   }
 
+  const inlinePreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "pull_request_review_comment",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        body: "Inline contract preview only.",
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        path: "src/app.py",
+        line: 42,
+        side: "RIGHT"
+      }
+    }
+  });
+  const inlinePreviewJson = jsonContent(inlinePreview);
+  if (inlinePreviewJson.operation !== "pull_request_review_comment") {
+    throw new Error("inline review comment preview did not preserve operation");
+  }
+  if (
+    !inlinePreviewJson.command?.args?.includes("repos/owner/repo/pulls/1/comments")
+    || !inlinePreviewJson.command.args.includes("line=42")
+    || !inlinePreviewJson.command.args.includes(
+      "commit_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
+  ) {
+    throw new Error("inline review comment preview did not build the expected gh api command");
+  }
+  if (readCommandLog().length !== callsBeforeMutationPreview) {
+    throw new Error("inline review comment preview should not invoke gh or git");
+  }
+
   fs.writeFileSync(stateFile, JSON.stringify({
     detached: false,
     head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
