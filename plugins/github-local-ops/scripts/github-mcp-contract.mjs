@@ -16,14 +16,53 @@ const reviewerLog = join(fakeBinDir, "reviewers.jsonl");
 const bodyFile = join(fakeBinDir, "body.txt");
 const checksFile = join(fakeBinDir, "checks.txt");
 const stateFile = join(fakeBinDir, "state.json");
+const identityFile = join(fakeBinDir, "identity-rules.json");
 const fakeGh = join(fakeBinDir, "gh.mjs");
 const fakeGit = join(fakeBinDir, "git.mjs");
+const fakeSshAdd = join(fakeBinDir, "ssh-add.mjs");
+const requestTimeoutMs = Number.parseInt(process.env.GITHUB_LOCAL_OPS_CONTRACT_TIMEOUT_MS || "15000", 10);
 fs.writeFileSync(stateFile, JSON.stringify({
   detached: false,
   head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   prListMode: "match",
-  prNumber: 292
+  prNumber: 292,
+  sshLoaded: true,
+  gitConfig: {
+    "user.email": "owner@example.com",
+    "gpg.format": "ssh",
+    "user.signingkey": "owner-signing-key"
+  }
 }), "utf8");
+fs.writeFileSync(identityFile, JSON.stringify({
+  rules: [
+    {
+      id: "owner-repo",
+      repo: "owner/repo",
+      githubAccount: "owner",
+      gitEmail: "owner@example.com",
+      gpgFormat: "ssh",
+      signingKey: "owner-signing-key",
+      sshKeyPath: join(fakeBinDir, "id_owner"),
+      sshKeyFingerprint: "SHA256:owner"
+    },
+    {
+      id: "personal-owner",
+      owner: "thomast8",
+      githubAccount: "thomast8",
+      gitEmail: "personal@example.com",
+      gpgFormat: "ssh",
+      signingKey: "personal-signing-key"
+    },
+    {
+      id: "corp-owner",
+      owner: "enterprise-org",
+      githubAccount: "corp-user",
+      gitEmail: "corp-user@example.com",
+      gpgFormat: "ssh",
+      signingKey: "corp-signing-key"
+    }
+  ]
+}, null, 2), "utf8");
 
 fs.writeFileSync(fakeGh, `#!/usr/bin/env node
 import fs from "node:fs";
@@ -34,6 +73,9 @@ function tokenAccount() {
   }
   if (process.env.GH_TOKEN === "token-thomast8") {
     return "thomast8";
+  }
+  if (process.env.GH_TOKEN === "token-corp") {
+    return "corp-user";
   }
   return null;
 }
@@ -50,26 +92,48 @@ if (args[0] === "--version") {
   process.exit(0);
 }
 if (args[0] === "auth" && args[1] === "status") {
+  const showToken = args.includes("--show-token");
   console.log("github.com");
   console.log("  \\u2713 Logged in to github.com account thomast8");
   console.log("  - Active account: true");
+  if (showToken) {
+    console.log("  - Token: token-thomast8");
+  }
   console.log("");
   console.log("  \\u2713 Logged in to github.com account owner");
   console.log("  - Active account: false");
+  if (showToken) {
+    console.log("  - Token: token-owner");
+  }
+  console.log("");
+  console.log("  \\u2713 Logged in to github.com account corp-user");
+  console.log("  - Active account: false");
+  if (showToken) {
+    console.log("  - Token: token-corp");
+  }
   console.log("");
   console.log("  \\u2713 Logged in to github.com account fallback");
   console.log("  - Active account: false");
   process.exit(0);
 }
 if (args[0] === "auth" && args[1] === "token") {
+  const current = state();
   const userIndex = args.indexOf("--user");
   const user = userIndex === -1 ? "thomast8" : args[userIndex + 1];
+  if ((current.tokenCommandFailsFor || []).includes(user)) {
+    console.error("no oauth token found for github.com account " + user);
+    process.exit(1);
+  }
   if (user === "owner") {
     console.log("token-owner");
     process.exit(0);
   }
   if (user === "thomast8") {
     console.log("token-thomast8");
+    process.exit(0);
+  }
+  if (user === "corp-user") {
+    console.log("token-corp");
     process.exit(0);
   }
   if (user === "fallback") {
@@ -94,9 +158,18 @@ if (args[0] === "repo" && args[1] === "view") {
     console.error("repo access denied for " + targetRepo);
     process.exit(1);
   }
+  if (targetRepo === "enterprise-org/PolicyAsCode" && tokenAccount() !== "corp-user") {
+    console.error("repo access denied for " + targetRepo);
+    process.exit(1);
+  }
+  if (targetRepo === "thomast8/codex-plugins" && tokenAccount() !== "thomast8") {
+    console.error("repo access denied for " + targetRepo);
+    process.exit(1);
+  }
+  const nameWithOwner = targetRepo || "owner/repo";
   console.log(JSON.stringify({
-    nameWithOwner: "owner/repo",
-    url: "https://github.com/owner/repo",
+    nameWithOwner,
+    url: "https://github.com/" + nameWithOwner,
     defaultBranchRef: { name: "main" },
     viewerPermission: "ADMIN",
     isPrivate: false,
@@ -120,6 +193,7 @@ function writeJsonl(filePath, value) {
 if (args[0] === "api" && args[1] === "graphql") {
   const queryArg = args.find((arg) => arg.startsWith("query=")) || "";
   if (queryArg.includes("pullRequests(states: OPEN")) {
+    const viewer = tokenAccount() || "thomast8";
     const includeChecks = queryArg.includes("statusCheckRollup");
     const checks = includeChecks
       ? {
@@ -147,7 +221,7 @@ if (args[0] === "api" && args[1] === "graphql") {
     console.log(JSON.stringify({
       data: {
         subject: {
-          login: "thomast8",
+          login: viewer,
           pullRequests: {
             totalCount: 2,
             pageInfo: { hasNextPage: false, endCursor: null },
@@ -164,7 +238,7 @@ if (args[0] === "api" && args[1] === "graphql") {
                 baseRefOid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                 headRefName: "feature/base",
                 headRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                author: { login: "thomast8" },
+                author: { login: viewer },
                 repository: { nameWithOwner: "owner/repo" },
                 headRepository: { nameWithOwner: "owner/repo" },
                 ...checks
@@ -181,7 +255,7 @@ if (args[0] === "api" && args[1] === "graphql") {
                 baseRefOid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 headRefName: "feature/child",
                 headRefOid: "cccccccccccccccccccccccccccccccccccccccc",
-                author: { login: "thomast8" },
+                author: { login: viewer },
                 repository: { nameWithOwner: "owner/repo" },
                 headRepository: { nameWithOwner: "owner/repo" },
                 ...checks
@@ -462,19 +536,43 @@ if (args[0] === "pr" && args[1] === "edit") {
   console.log("");
   process.exit(0);
 }
+if (args[0] === "pr" && args[1] === "create") {
+  if (!args.includes("--draft")) {
+    console.error("contract PR creation must be draft");
+    process.exit(1);
+  }
+  console.log("https://github.com/owner/repo/pull/300");
+  process.exit(0);
+}
 console.error("unexpected gh args " + JSON.stringify(args));
 process.exit(1);
 `, "utf8");
 fs.writeFileSync(fakeGit, `#!/usr/bin/env node
 import fs from "node:fs";
 const args = process.argv.slice(2);
-fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "git", args, cwd: process.cwd() }) + "\\n");
+const effectiveArgs = args[0] === "-c" ? args.slice(2) : args;
+function askpassTokenAccount() {
+  if (process.env.GITHUB_LOCAL_OPS_ASKPASS_TOKEN === "token-owner") {
+    return "owner";
+  }
+  if (process.env.GITHUB_LOCAL_OPS_ASKPASS_TOKEN === "token-thomast8") {
+    return "thomast8";
+  }
+  if (process.env.GITHUB_LOCAL_OPS_ASKPASS_TOKEN === "token-corp") {
+    return "corp-user";
+  }
+  return null;
+}
+fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "git", args, cwd: process.cwd(), askpassTokenAccount: askpassTokenAccount(), gitAskpass: process.env.GIT_ASKPASS || null }) + "\\n");
 function state() {
   try {
     return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
   } catch {
     return {};
   }
+}
+function writeState(next) {
+  fs.writeFileSync(process.env.FAKE_STATE_FILE, JSON.stringify(next), "utf8");
 }
 if (args[0] === "--version") {
   console.log("git version 2.0.0");
@@ -535,18 +633,68 @@ if (args[0] === "remote") {
   }
 }
 if (args[0] === "remote" && args[1] === "get-url" && args[2] === "origin") {
-  console.log("https://token@github.com/owner/repo.git");
+  console.log(state().remoteUrl || "https://token@github.com/owner/repo.git");
+  process.exit(0);
+}
+if (args[0] === "config" && args[1] === "--get") {
+  const value = state().gitConfig?.[args[2]];
+  if (value == null) {
+    process.exit(1);
+  }
+  console.log(value);
+  process.exit(0);
+}
+if (args[0] === "config" && args.length === 3) {
+  const current = state();
+  current.gitConfig = { ...(current.gitConfig || {}), [args[1]]: args[2] };
+  writeState(current);
   process.exit(0);
 }
 if (args[0] === "fetch") {
   console.log("");
   process.exit(0);
 }
+if (effectiveArgs[0] === "push") {
+  console.log("pushed");
+  process.exit(0);
+}
 console.error("unexpected git args " + JSON.stringify(args));
+process.exit(1);
+`, "utf8");
+fs.writeFileSync(fakeSshAdd, `#!/usr/bin/env node
+import fs from "node:fs";
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "ssh-add", args, cwd: process.cwd() }) + "\\n");
+function state() {
+  try {
+    return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function writeState(next) {
+  fs.writeFileSync(process.env.FAKE_STATE_FILE, JSON.stringify(next), "utf8");
+}
+if (args[0] === "-l") {
+  if (!state().sshLoaded) {
+    console.error("The agent has no identities.");
+    process.exit(1);
+  }
+  console.log("256 SHA256:owner owner@example.com (ED25519)");
+  process.exit(0);
+}
+if (args[0]) {
+  const current = state();
+  current.sshLoaded = true;
+  writeState(current);
+  process.exit(0);
+}
+console.error("unexpected ssh-add args " + JSON.stringify(args));
 process.exit(1);
 `, "utf8");
 fs.chmodSync(fakeGh, 0o755);
 fs.chmodSync(fakeGit, 0o755);
+fs.chmodSync(fakeSshAdd, 0o755);
 
 if (!serverConfig || serverConfig.command !== "node") {
   throw new Error("github-local-ops .mcp.json must declare a node command");
@@ -566,6 +714,8 @@ const child = spawn(serverConfig.command, serverConfig.args, {
     GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES: "",
     GITHUB_LOCAL_OPS_GH_BIN: fakeGh,
     GITHUB_LOCAL_OPS_GIT_BIN: fakeGit,
+    GITHUB_LOCAL_OPS_SSH_ADD_BIN: fakeSshAdd,
+    GITHUB_LOCAL_OPS_IDENTITY_FILE: identityFile,
     FAKE_COMMAND_LOG: commandLog,
     FAKE_REPLY_LOG: replyLog,
     FAKE_REVIEW_LOG: reviewLog,
@@ -622,7 +772,7 @@ function request(method, params = {}) {
     const timeout = setTimeout(() => {
       pending.delete(id);
       reject(new Error(`Timed out waiting for ${method}`));
-    }, 5000);
+    }, requestTimeoutMs);
     pending.set(id, { resolve, reject, timeout });
     child.stdin.write(`${JSON.stringify(payload)}\n`);
   });
@@ -683,12 +833,17 @@ async function main() {
   for (const name of [
     "github_setup_status",
     "github_current_context",
+    "github_identity_status",
+    "github_identity_fix_preview",
+    "github_identity_fix_execute",
     "github_pr_view",
     "github_my_pull_requests",
     "github_pr_rebase_plan",
     "github_pr_handoff_status",
     "github_review_handoff_preview",
     "github_mutation_preview",
+    "github_git_push_preview",
+    "github_git_push_execute",
     "github_mutation_execute"
   ]) {
     if (!names.includes(name)) {
@@ -698,6 +853,9 @@ async function main() {
   const mutationPreviewTool = toolsResult.result.tools.find((tool) => tool.name === "github_mutation_preview");
   if (!mutationPreviewTool?.inputSchema?.properties?.operation?.enum?.includes("pull_request_review")) {
     throw new Error("github_mutation_preview schema did not expose pull_request_review");
+  }
+  if (!mutationPreviewTool?.inputSchema?.properties?.operation?.enum?.includes("pr_create_draft")) {
+    throw new Error("github_mutation_preview schema did not expose pr_create_draft");
   }
 
   const status = await request("tools/call", {
@@ -719,13 +877,144 @@ async function main() {
   if (setup.git?.origin !== "https://[redacted]@github.com/owner/repo.git") {
     throw new Error("github_setup_status did not redact credentialed origin URL");
   }
-  if (setup.authSelection?.strategy !== "owner_login_match" || setup.authSelection?.account !== "owner") {
-    throw new Error("github_setup_status did not select the repo-owner gh account without switching globally");
+  if (setup.authSelection?.strategy !== "identity_rule" || setup.authSelection?.account !== "owner") {
+    throw new Error("github_setup_status did not select the local identity-rule gh account without switching globally");
+  }
+  if (setup.identity?.identity?.status !== "ready" || setup.identity?.identity?.localOnly !== true) {
+    throw new Error("github_setup_status did not include ready local-only identity status");
   }
   const setupRepoView = readCommandLog().find((call) => call.bin === "gh" && call.args[0] === "repo" && call.args[1] === "view");
   if (setupRepoView?.tokenAccount !== "owner") {
     throw new Error("repo-aware gh calls should use the owner account token for owner/repo");
   }
+  const identityStatus = await request("tools/call", {
+    name: "github_identity_status",
+    arguments: { cwd: pluginRoot, repo: "owner/repo" }
+  });
+  const identityStatusJson = jsonContent(identityStatus);
+  if (
+    identityStatusJson.identity?.status !== "ready"
+    || identityStatusJson.identity?.selectedAccount !== "owner"
+    || identityStatusJson.configFile !== identityFile
+    || identityStatusJson.fixes?.length !== 0
+  ) {
+    throw new Error("github_identity_status did not report the ready local owner identity");
+  }
+  const personalIdentityStatus = await request("tools/call", {
+    name: "github_identity_status",
+    arguments: { cwd: pluginRoot, repo: "thomast8/codex-plugins" }
+  });
+  if (jsonContent(personalIdentityStatus).identity?.selectedAccount !== "thomast8") {
+    throw new Error("github_identity_status did not select the personal account from local-only owner rules");
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    sshLoaded: true,
+    tokenCommandFailsFor: ["corp-user"],
+    gitConfig: {
+      "user.email": "owner@example.com",
+      "gpg.format": "ssh",
+      "user.signingkey": "owner-signing-key"
+    }
+  }), "utf8");
+  const corpIdentityStatus = await request("tools/call", {
+    name: "github_identity_status",
+    arguments: { cwd: pluginRoot, repo: "enterprise-org/PolicyAsCode" }
+  });
+  const corpIdentityStatusJson = jsonContent(corpIdentityStatus);
+  if (
+    corpIdentityStatusJson.identity?.selectedAccount !== "corp-user"
+    || corpIdentityStatusJson.authSelection?.account !== "corp-user"
+  ) {
+    throw new Error("github_identity_status did not select the corporate account from local-only owner rules with auth status token fallback");
+  }
+  const missingIdentityBackup = `${identityFile}.bak`;
+  fs.renameSync(identityFile, missingIdentityBackup);
+  try {
+    const noLocalRulesStatus = await request("tools/call", {
+      name: "github_identity_status",
+      arguments: { cwd: pluginRoot, repo: "owner/repo" }
+    });
+    const noLocalRulesJson = jsonContent(noLocalRulesStatus);
+    if (
+      fs.existsSync(identityFile)
+      || noLocalRulesJson.identity?.status !== "unverified"
+      || noLocalRulesJson.identity?.matched !== false
+      || noLocalRulesJson.identity?.selectedAccount !== "owner"
+      || noLocalRulesJson.authSelection?.strategy !== "owner_login_permission_probe"
+      || noLocalRulesJson.authSelection?.localIdentityVerified !== false
+    ) {
+      throw new Error("missing local identity rules should infer only API identity without creating files or verifying git signing identity");
+    }
+  } finally {
+    fs.renameSync(missingIdentityBackup, identityFile);
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    sshLoaded: false,
+    gitConfig: {
+      "user.email": "wrong@example.com",
+      "gpg.format": "openpgp",
+      "user.signingkey": "wrong-key"
+    }
+  }), "utf8");
+  const identityFixPreview = await request("tools/call", {
+    name: "github_identity_fix_preview",
+    arguments: { cwd: pluginRoot, repo: "owner/repo" }
+  });
+  const identityFixPreviewJson = jsonContent(identityFixPreview);
+  if (
+    !identityFixPreviewJson.approvalToken
+    || identityFixPreviewJson.fixes?.map((fix) => fix.kind).join(",") !== "git_email,gpg_format,signing_key,ssh_add"
+  ) {
+    throw new Error("github_identity_fix_preview did not preview all required local identity fixes");
+  }
+  const identityFixExecute = await request("tools/call", {
+    name: "github_identity_fix_execute",
+    arguments: { approvalToken: identityFixPreviewJson.approvalToken }
+  });
+  const identityFixExecuteJson = jsonContent(identityFixExecute);
+  if (identityFixExecuteJson.finalIdentity?.status !== "ready") {
+    throw new Error("github_identity_fix_execute did not make the local identity ready");
+  }
+  const fixCommands = readCommandLog().filter((call) => (
+    (call.bin === "git" && call.args[0] === "config")
+    || call.bin === "ssh-add"
+  ));
+  if (!fixCommands.some((call) => call.bin === "ssh-add" && call.args[0] === join(fakeBinDir, "id_owner"))) {
+    throw new Error("github_identity_fix_execute did not load the configured SSH key");
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    sshLoaded: true,
+    gitConfig: {
+      "user.email": "owner@example.com",
+      "gpg.format": "ssh",
+      "user.signingkey": "owner-signing-key"
+    }
+  }), "utf8");
+  const originalIdentityRules = fs.readFileSync(identityFile, "utf8");
+  fs.writeFileSync(identityFile, JSON.stringify({
+    rules: [
+      { id: "owner-a", repo: "owner/repo", githubAccount: "owner" },
+      { id: "owner-b", repo: "owner/repo", githubAccount: "thomast8" }
+    ]
+  }), "utf8");
+  await expectToolError(
+    "github_repo_view",
+    { cwd: pluginRoot, repo: "owner/repo" },
+    "GitHub identity selection for owner/repo is ambiguous"
+  );
+  fs.writeFileSync(identityFile, originalIdentityRules, "utf8");
   const ambiguousRepo = await request("tools/call", {
     name: "github_repo_view",
     arguments: { cwd: pluginRoot, repo: "shared/repo" }
@@ -840,6 +1129,7 @@ async function main() {
     prNumber: 292
   }), "utf8");
 
+  const callsBeforeMyPullRequests = readCommandLog().length;
   const myPullRequests = await request("tools/call", {
     name: "github_my_pull_requests",
     arguments: {
@@ -851,6 +1141,12 @@ async function main() {
   const myPullRequestsJson = jsonContent(myPullRequests);
   if (myPullRequestsJson.discovery?.strategy !== "graphql_viewer_pull_requests") {
     throw new Error("github_my_pull_requests did not use GraphQL viewer discovery");
+  }
+  const myPullRequestApiCalls = readCommandLog()
+    .slice(callsBeforeMyPullRequests)
+    .filter((call) => call.bin === "gh" && call.args[0] === "api");
+  if (myPullRequestApiCalls.length === 0 || myPullRequestApiCalls.some((call) => call.tokenAccount !== "owner")) {
+    throw new Error("github_my_pull_requests did not use the selected local identity for GraphQL viewer discovery");
   }
   if (myPullRequestsJson.pullRequests?.length !== 2 || myPullRequestsJson.abstract?.drafts !== 1) {
     throw new Error("github_my_pull_requests did not return authored open PRs including drafts");
@@ -938,6 +1234,88 @@ async function main() {
     throw new Error("github_mutation_preview should not invoke gh or git");
   }
 
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    sshLoaded: true,
+    gitConfig: {
+      "user.email": "owner@example.com",
+      "gpg.format": "ssh",
+      "user.signingkey": "owner-signing-key"
+    }
+  }), "utf8");
+  const pushPreview = await request("tools/call", {
+    name: "github_git_push_preview",
+    arguments: {
+      cwd: pluginRoot,
+      refspec: "HEAD:refs/heads/feature/review",
+      dryRun: true
+    }
+  });
+  const pushPreviewJson = jsonContent(pushPreview);
+  if (
+    pushPreviewJson.identity?.selectedAccount !== "owner"
+    || !pushPreviewJson.command?.args?.includes("--dry-run")
+    || !pushPreviewJson.approvalToken
+  ) {
+    throw new Error("github_git_push_preview did not build an identity-aware push plan");
+  }
+  const callsBeforePushExecute = readCommandLog().length;
+  const pushExecute = await request("tools/call", {
+    name: "github_git_push_execute",
+    arguments: { approvalToken: pushPreviewJson.approvalToken }
+  });
+  const pushExecuteJson = jsonContent(pushExecute);
+  const pushCalls = readCommandLog()
+    .slice(callsBeforePushExecute)
+    .filter((call) => call.bin === "git" && call.args.includes("push"));
+  if (
+    pushExecuteJson.status !== 0
+    || pushCalls.length !== 1
+    || pushCalls[0].args[0] !== "-c"
+    || pushCalls[0].args[1] !== "credential.helper="
+    || pushCalls[0].askpassTokenAccount !== "owner"
+    || !pushCalls[0].gitAskpass
+  ) {
+    throw new Error("github_git_push_execute did not use command-scoped owner credentials for HTTPS push");
+  }
+
+  const draftPrPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "pr_create_draft",
+      payload: {
+        repo: "owner/repo",
+        title: "Contract draft PR",
+        body: "Draft body",
+        base: "main",
+        head: "feature/review"
+      }
+    }
+  });
+  const draftPrPreviewJson = jsonContent(draftPrPreview);
+  if (
+    draftPrPreviewJson.operation !== "pr_create_draft"
+    || !draftPrPreviewJson.command?.args?.includes("--draft")
+    || !draftPrPreviewJson.command?.args?.includes("--title")
+  ) {
+    throw new Error("pr_create_draft preview did not build the expected draft PR command");
+  }
+  const callsBeforeDraftPrExecute = readCommandLog().length;
+  const draftPrExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: { approvalToken: draftPrPreviewJson.approvalToken }
+  });
+  const draftPrCalls = readCommandLog()
+    .slice(callsBeforeDraftPrExecute)
+    .filter((call) => call.bin === "gh" && call.args[0] === "pr" && call.args[1] === "create");
+  if (jsonContent(draftPrExecute).status !== 0 || draftPrCalls.length !== 1 || draftPrCalls[0].tokenAccount !== "owner") {
+    throw new Error("pr_create_draft execution did not use command-scoped owner identity");
+  }
+
+  const callsBeforeInlinePreview = readCommandLog().length;
   const inlinePreview = await request("tools/call", {
     name: "github_mutation_preview",
     arguments: {
@@ -966,7 +1344,7 @@ async function main() {
   ) {
     throw new Error("inline review comment preview did not build the expected gh api command");
   }
-  if (readCommandLog().length !== callsBeforeMutationPreview) {
+  if (readCommandLog().length !== callsBeforeInlinePreview) {
     throw new Error("inline review comment preview should not invoke gh or git");
   }
 
@@ -1054,6 +1432,7 @@ async function main() {
     "payload.body is required"
   );
 
+  const callsBeforeBatchPreview = readCommandLog().length;
   const batchPreview = await request("tools/call", {
     name: "github_mutation_preview",
     arguments: {
@@ -1091,7 +1470,7 @@ async function main() {
   ) {
     throw new Error("pull_request_review preview did not expose the expected batch request");
   }
-  if (readCommandLog().length !== callsBeforeMutationPreview) {
+  if (readCommandLog().length !== callsBeforeBatchPreview) {
     throw new Error("pull_request_review preview should not invoke gh or git");
   }
 

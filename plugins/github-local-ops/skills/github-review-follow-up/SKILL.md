@@ -9,14 +9,14 @@ Use this skill when the user asks to address PR review comments, reply to review
 
 ## Workflow
 
-1. Run `github_setup_status` if auth, repo, or plugin readiness is unclear. Pass the user checkout `cwd` when working from local refs.
+1. Run `github_setup_status` if auth, repo, identity, or plugin readiness is unclear. Pass the user checkout `cwd` when working from local refs.
 2. Fetch repo refs before PR review work when operating inside a checkout.
 3. Run `github_pr_view` for base/head metadata and review decision.
 4. Run `github_pr_review_threads` for GraphQL review-thread IDs and inline comments.
 5. Inspect local code and tests needed to decide whether each comment is valid, already handled, rejected, or needs a fix.
 6. Build a ledger with original comment, code-context reasoning, status, evidence, and exact proposed public reply.
 7. Wait for explicit approval before posting.
-8. When the user says to send a reviewed PR back to the author, submit a formal `REQUEST_CHANGES` review. Do not confuse this with requesting reviewers, which sends the PR back to reviewers after the author has fixed it. A PR conversation comment is not enough, even if it contains the same text. Preview and approval-gate the exact review body; if the provider rejects `REQUEST_CHANGES` or only supports `COMMENT` for `pull_request_review`, use `gh pr review <number> --request-changes --body ...` as the provider-gap fallback. Immediately read back with `github_pr_view` and do not say it was sent back unless `reviewDecision` or the latest review state is `CHANGES_REQUESTED`.
+8. When the user says to send a reviewed PR back to the author, submit a formal `REQUEST_CHANGES` review. Do not confuse this with requesting reviewers, which sends the PR back to reviewers after the author has fixed it. A PR conversation comment is not enough, even if it contains the same text. Preview and approval-gate the exact review body; if the provider rejects `REQUEST_CHANGES` or only supports `COMMENT` for `pull_request_review`, raw `gh pr review` is a provider-gap fallback only after `github_identity_status`, explicit reporting, command-scoped identity where possible, and readback with `github_pr_view`.
 9. Before any reviewer re-request, run `github_pr_handoff_status` with the expected head SHA, approved replies, expected PR body marker when relevant, and expected reviewers.
 10. Use `github_review_handoff_preview` for approved replies, PR body update, and reviewer re-request. Echo the preview and wait for explicit approval.
 11. After approval, call `github_mutation_execute` only if the preview reports `executableByTool: true`. The MCP posts replies, reads them back, updates the PR body, re-checks CI, then requests reviewers.
@@ -44,6 +44,11 @@ Report these as separate facts, not one blended "done":
 If the PR head has the expected commit but approved replies are still unposted or unread, call out the `pushedIsNotReplied` guard and do not claim handoff is complete.
 
 Before requesting re-review, check for approved but unposted replies. If any exist, post and read back those replies first. If checks are failing, request re-review only when the user explicitly asks for human review despite failing CI.
+
+## Shell Boundary
+
+- Do not use naked `gh`, `gh api`, `gh pr`, `gh repo`, `gh run`, `gh workflow`, or `gh auth switch` for review follow-up when a GitHub Local Ops tool covers the operation.
+- Raw `gh` is allowed only as an explicitly reported provider-gap fallback after `github_identity_status` evidence, with provider readback afterward.
 
 ## Public Reply Style
 

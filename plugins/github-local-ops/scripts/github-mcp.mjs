@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { randomBytes, createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import process from "node:process";
 
 const SERVER_NAME = "github-local-ops";
 const SERVER_VERSION = "0.1.0";
 const GH_BIN = process.env.GITHUB_LOCAL_OPS_GH_BIN || "gh";
 const GIT_BIN = process.env.GITHUB_LOCAL_OPS_GIT_BIN || "git";
+const SSH_ADD_BIN = process.env.GITHUB_LOCAL_OPS_SSH_ADD_BIN || "ssh-add";
 const TOKEN_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_APPROVAL_TTL_MS || 10 * 60 * 1000);
 const FETCH_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_FETCH_TTL_MS || 5 * 60 * 1000);
 const AUTH_CACHE_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_AUTH_CACHE_TTL_MS || 5 * 60 * 1000);
@@ -90,6 +94,40 @@ const TOOLS = [
       githubAccount: repoSchema.githubAccount,
       ...autoFetchSchema
     })
+  },
+  {
+    name: "github_identity_status",
+    description: "Check local-only GitHub identity rules, selected gh account, repo-local git author/signing config, and SSH key readiness.",
+    inputSchema: objectSchema({
+      ...repoSchema,
+      ...autoFetchSchema
+    })
+  },
+  {
+    name: "github_identity_fix_preview",
+    description: "Preview local-only identity fixes such as repo-local git config updates and ssh-add. Does not mutate local state.",
+    inputSchema: objectSchema({
+      ...repoSchema,
+      ...autoFetchSchema,
+      fixes: {
+        type: "array",
+        items: {
+          type: "string",
+          enum: ["git_email", "gpg_format", "signing_key", "ssh_add"]
+        },
+        description: "Optional subset of fix kinds to preview. Defaults to all required fixes."
+      }
+    })
+  },
+  {
+    name: "github_identity_fix_execute",
+    description: "Execute a previously previewed local identity fix. Requires an approval token returned by github_identity_fix_preview.",
+    inputSchema: objectSchema({
+      approvalToken: {
+        type: "string",
+        description: "Token returned by github_identity_fix_preview."
+      }
+    }, ["approvalToken"])
   },
   {
     name: "github_repo_view",
@@ -444,7 +482,8 @@ const TOOLS = [
           "issue_label",
           "workflow_dispatch",
           "rerun_failed_workflow",
-          "create_release"
+          "create_release",
+          "pr_create_draft"
         ]
       },
       payload: {
@@ -452,6 +491,46 @@ const TOOLS = [
         description: "Operation-specific payload. The preview response shows the exact gh command or GraphQL call."
       }
     }, ["operation", "payload"])
+  },
+  {
+    name: "github_git_push_preview",
+    description: "Preview a git push using GitHub Local Ops identity checks and command-scoped credentials.",
+    inputSchema: objectSchema({
+      cwd: repoSchema.cwd,
+      githubAccount: repoSchema.githubAccount,
+      remote: {
+        type: "string",
+        description: "Remote name to push to. Defaults to origin."
+      },
+      refspec: {
+        type: ["string", "array"],
+        items: { type: "string" },
+        description: "Optional refspec or refspec list. Defaults to git push's current branch behavior."
+      },
+      forceWithLease: {
+        type: "boolean",
+        description: "Add --force-with-lease."
+      },
+      setUpstream: {
+        type: "boolean",
+        description: "Add --set-upstream."
+      },
+      dryRun: {
+        type: "boolean",
+        description: "Add --dry-run."
+      }
+    })
+  },
+  {
+    name: "github_git_push_execute",
+    description: "Execute a previously previewed identity-aware git push. Requires an approval token returned by github_git_push_preview.",
+    inputSchema: objectSchema({
+      approvalToken: {
+        type: "string",
+        description: "Token returned by github_git_push_preview."
+      },
+      maxBytes: maxBytesSchema.maxBytes
+    }, ["approvalToken"])
   },
   {
     name: "github_mutation_execute",
@@ -563,6 +642,18 @@ function safeRunGit(args, options = {}) {
     return runGit(args, { ...options, allowFailure: true });
   } catch (error) {
     return failedRun(GIT_BIN, args, options, error);
+  }
+}
+
+function runSshAdd(args, options = {}) {
+  return run(SSH_ADD_BIN, args, options);
+}
+
+function safeRunSshAdd(args, options = {}) {
+  try {
+    return runSshAdd(args, { ...options, allowFailure: true });
+  } catch (error) {
+    return failedRun(SSH_ADD_BIN, args, options, error);
   }
 }
 
@@ -1421,18 +1512,27 @@ function outputText(result) {
   return result.stdout.trim() || result.stderr.trim() || null;
 }
 
-function parseGhAccounts(statusText) {
+function parseGhAccounts(statusText, options = {}) {
   const accounts = [];
   let current = null;
   for (const line of statusText.split("\n")) {
     const login = line.match(/^\s*✓ Logged in to github\.com account (\S+)/);
     if (login) {
       current = { login: login[1], active: false };
+      if (options.includeTokens === true) {
+        current.token = null;
+      }
       accounts.push(current);
       continue;
     }
     if (current && line.includes("- Active account: true")) {
       current.active = true;
+    }
+    if (current && options.includeTokens === true) {
+      const token = line.match(/^\s*-\s*Token:\s*(\S+)/);
+      if (token && !token[1].includes("*")) {
+        current.token = token[1];
+      }
     }
   }
   return accounts;
@@ -1442,18 +1542,11 @@ function accountAuthHint(targetRepo, accounts) {
   if (!targetRepo || accounts.length < 2) {
     return null;
   }
-  const owner = targetRepo.owner.toLowerCase();
   const active = accounts.find((account) => account.active);
-  if (owner.includes("kyndryl")) {
-    const kyndryl = accounts.find((account) => account.login.toLowerCase().includes("kyndryl"));
-    if (kyndryl && !kyndryl.active) {
-      return `Active gh account is ${active?.login || "unknown"}; GitHub Local Ops will use ${kyndryl.login} for ${targetRepo.nameWithOwner} when repo-aware token selection can verify access.`;
-    }
-  }
   if (active) {
-    return `Active gh account is ${active.login}; pass githubAccount only when automatic repo-aware token selection cannot choose the intended account for ${targetRepo.nameWithOwner}.`;
+    return `Active gh account is ${active.login}; GitHub Local Ops will prefer local identity rules and repo-aware token selection for ${targetRepo.nameWithOwner}. Pass githubAccount only when automatic selection is ambiguous.`;
   }
-  return `Pass githubAccount only when automatic repo-aware token selection cannot choose the intended account for ${targetRepo.nameWithOwner}.`;
+  return `GitHub Local Ops will prefer local identity rules and repo-aware token selection for ${targetRepo.nameWithOwner}. Pass githubAccount only when automatic selection is ambiguous.`;
 }
 
 function maybeRepoNameWithOwner(value) {
@@ -1538,6 +1631,401 @@ function commandDefaultsToCwdRepo(args) {
   return ["pr", "issue", "release", "run", "workflow"].includes(args[0]);
 }
 
+function expandHome(value) {
+  const text = String(value || "");
+  if (text === "~") {
+    return os.homedir();
+  }
+  if (text.startsWith("~/")) {
+    return path.join(os.homedir(), text.slice(2));
+  }
+  return text;
+}
+
+function identityRulesPath(env = process.env) {
+  if (env.GITHUB_LOCAL_OPS_IDENTITY_FILE?.trim()) {
+    return path.resolve(expandHome(env.GITHUB_LOCAL_OPS_IDENTITY_FILE.trim()));
+  }
+  const codexHome = env.CODEX_HOME?.trim()
+    ? path.resolve(expandHome(env.CODEX_HOME.trim()))
+    : path.join(os.homedir(), ".Codex");
+  return path.join(codexHome, "plugins", "github-local-ops", "identity-rules.json");
+}
+
+function optionalStringList(rule, keys) {
+  const values = [];
+  for (const key of keys) {
+    if (rule[key] == null) {
+      continue;
+    }
+    const raw = Array.isArray(rule[key]) ? rule[key] : [rule[key]];
+    for (const item of raw) {
+      if (item != null && String(item).trim() !== "") {
+        values.push(String(item).trim());
+      }
+    }
+  }
+  return [...new Set(values)];
+}
+
+function normalizeIdentityRule(rule, index) {
+  if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+    throw new Error(`identity rule ${index} must be an object`);
+  }
+  const repos = optionalStringList(rule, ["repo", "repository", "repos", "repositories"])
+    .map((repo) => parseRepoName(repo).nameWithOwner);
+  const owners = optionalStringList(rule, ["owner", "org", "organization", "owners", "orgs", "organizations"]);
+  const pathPrefixes = optionalStringList(rule, ["pathPrefix", "path", "paths", "pathPrefixes"])
+    .map((prefix) => path.resolve(expandHome(prefix)));
+  const githubAccount = requireOptionalLogin(rule.githubAccount ?? rule.account, `rules[${index}].githubAccount`);
+  const gitEmail = trimOrNull(rule.gitEmail ?? rule.email);
+  const gpgFormat = trimOrNull(rule.gpgFormat ?? rule.gpg_format);
+  const signingKey = trimOrNull(rule.signingKey ?? rule.userSigningKey ?? rule.signing_key);
+  const sshKeyPath = trimOrNull(rule.sshKeyPath ?? rule.sshKey ?? rule.ssh_key_path);
+  const sshKeyFingerprint = trimOrNull(rule.sshKeyFingerprint ?? rule.sshFingerprint ?? rule.ssh_fingerprint);
+  if (repos.length === 0 && owners.length === 0 && pathPrefixes.length === 0) {
+    throw new Error(`identity rule ${index} must include repo, owner, or pathPrefix`);
+  }
+  if (!githubAccount && !gitEmail && !gpgFormat && !signingKey && !sshKeyPath && !sshKeyFingerprint) {
+    throw new Error(`identity rule ${index} must include at least one identity field`);
+  }
+  return {
+    id: trimOrNull(rule.id) || `rule-${index + 1}`,
+    repos,
+    owners,
+    pathPrefixes,
+    githubAccount,
+    gitEmail,
+    gpgFormat,
+    signingKey,
+    sshKeyPath: sshKeyPath ? path.resolve(expandHome(sshKeyPath)) : null,
+    sshKeyFingerprint
+  };
+}
+
+function readIdentityRules(env = process.env) {
+  const filePath = identityRulesPath(env);
+  if (!fs.existsSync(filePath)) {
+    return {
+      filePath,
+      exists: false,
+      rules: [],
+      cacheKey: `${filePath}\0missing`
+    };
+  }
+  let stat;
+  let parsed;
+  try {
+    stat = fs.statSync(filePath);
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(`Could not read GitHub Local Ops identity rules at ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const rawRules = Array.isArray(parsed) ? parsed : parsed?.rules;
+  if (!Array.isArray(rawRules)) {
+    throw new Error(`GitHub Local Ops identity rules at ${filePath} must be an array or an object with a rules array`);
+  }
+  return {
+    filePath,
+    exists: true,
+    rules: rawRules.map((rule, index) => normalizeIdentityRule(rule, index)),
+    cacheKey: `${filePath}\0${stat.mtimeMs}\0${stat.size}`
+  };
+}
+
+function normalizedPath(value) {
+  return path.resolve(expandHome(value || process.cwd()));
+}
+
+function pathIsInside(basePath, candidatePath) {
+  const relative = path.relative(normalizedPath(basePath), normalizedPath(candidatePath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function matchByScope(rules, repo, root) {
+  const repoName = repo ? parseRepoName(repo).nameWithOwner : null;
+  const owner = repoName ? parseRepoName(repoName).owner.toLowerCase() : null;
+  const exact = repoName
+    ? rules.filter((rule) => rule.repos.some((candidate) => candidate.toLowerCase() === repoName.toLowerCase()))
+    : [];
+  if (exact.length > 0) {
+    return { scope: "exact_repo", matches: exact };
+  }
+  const ownerMatches = owner
+    ? rules.filter((rule) => rule.owners.some((candidate) => candidate.toLowerCase() === owner))
+    : [];
+  if (ownerMatches.length > 0) {
+    return { scope: "owner", matches: ownerMatches };
+  }
+  const pathMatches = root
+    ? rules
+      .flatMap((rule) => rule.pathPrefixes
+        .filter((prefix) => pathIsInside(prefix, root))
+        .map((prefix) => ({ rule, prefix, length: normalizedPath(prefix).length })))
+      .sort((left, right) => right.length - left.length)
+    : [];
+  if (pathMatches.length > 0) {
+    const longest = pathMatches[0].length;
+    return {
+      scope: "path_prefix",
+      matches: pathMatches.filter((match) => match.length === longest).map((match) => match.rule)
+    };
+  }
+  return { scope: null, matches: [] };
+}
+
+function resolveLocalIdentity(cwd, repo = null) {
+  const config = readIdentityRules();
+  const checkout = inspectGitCheckout(cwd);
+  const root = checkout.root || cwd;
+  const match = matchByScope(config.rules, repo, root);
+  const uniqueMatches = [...new Map(match.matches.map((rule) => [rule.id, rule])).values()];
+  const ambiguous = uniqueMatches.length > 1;
+  const rule = uniqueMatches.length === 1 ? uniqueMatches[0] : null;
+  const warnings = [];
+  if (!config.exists) {
+    warnings.push(`No local identity rules file found at ${config.filePath}; API account selection may be inferred but commit/signing identity is unverified.`);
+  } else if (!rule && !ambiguous) {
+    warnings.push(`No local identity rule matched ${repo || root}; API account selection may be inferred but commit/signing identity is unverified.`);
+  }
+  if (ambiguous) {
+    warnings.push(`Multiple local identity rules match ${repo || root}: ${uniqueMatches.map((candidate) => candidate.id).join(", ")}.`);
+  }
+  return {
+    configFile: config.filePath,
+    configExists: config.exists,
+    cacheKey: config.cacheKey,
+    checkout,
+    root,
+    repo,
+    scope: match.scope,
+    rule,
+    ambiguous,
+    matches: uniqueMatches.map((candidate) => candidate.id),
+    warnings
+  };
+}
+
+function gitConfigValue(cwd, key) {
+  const result = safeRunGit(["config", "--get", key], { cwd });
+  return result.status === 0 ? trimOrNull(result.stdout) : null;
+}
+
+function sshKeyReady(rule, cwd) {
+  const list = safeRunSshAdd(["-l"], { cwd });
+  const output = outputText(list) || "";
+  let ready = null;
+  if (rule?.sshKeyFingerprint) {
+    ready = output.includes(rule.sshKeyFingerprint);
+  } else if (rule?.sshKeyPath) {
+    ready = list.status === 0 ? null : false;
+  }
+  return {
+    command: list.command,
+    status: list.status,
+    ready,
+    fingerprint: rule?.sshKeyFingerprint || null,
+    keyPath: rule?.sshKeyPath || null,
+    output: output || null
+  };
+}
+
+function identityFixes(status) {
+  const fixes = [];
+  const expected = status.expected || {};
+  const actual = status.actual || {};
+  if (expected.gitEmail && actual.gitEmail !== expected.gitEmail) {
+    fixes.push({
+      kind: "git_email",
+      command: [GIT_BIN, "config", "user.email", expected.gitEmail],
+      cwd: status.git.root || status.cwd,
+      reason: `repo-local user.email is ${actual.gitEmail || "unset"}`
+    });
+  }
+  if (expected.gpgFormat && actual.gpgFormat !== expected.gpgFormat) {
+    fixes.push({
+      kind: "gpg_format",
+      command: [GIT_BIN, "config", "gpg.format", expected.gpgFormat],
+      cwd: status.git.root || status.cwd,
+      reason: `repo-local gpg.format is ${actual.gpgFormat || "unset"}`
+    });
+  }
+  if (expected.signingKey && actual.signingKey !== expected.signingKey) {
+    fixes.push({
+      kind: "signing_key",
+      command: [GIT_BIN, "config", "user.signingkey", expected.signingKey],
+      cwd: status.git.root || status.cwd,
+      reason: "repo-local user.signingkey does not match the selected identity rule"
+    });
+  }
+  if (expected.sshKeyPath && status.ssh.ready !== true) {
+    fixes.push({
+      kind: "ssh_add",
+      command: [SSH_ADD_BIN, expected.sshKeyPath],
+      cwd: status.cwd,
+      reason: "configured SSH key is not confirmed in the agent"
+    });
+  }
+  return fixes;
+}
+
+function buildIdentityStatus(input = {}) {
+  const cwd = cwdFrom(input);
+  const freshness = maybeAutoFetch(input);
+  const explicitAccount = requireOptionalLogin(input.githubAccount, "githubAccount");
+  const targetRepo = input.repo ? parseRepoName(input.repo).nameWithOwner : repoFromCwd(cwd);
+  const local = resolveLocalIdentity(cwd, targetRepo);
+  const rule = local.rule;
+  const warnings = [...local.warnings, ...freshnessWarnings(freshness)];
+  let selectedAccount = explicitAccount || rule?.githubAccount || null;
+  let authSelection = null;
+  let authError = null;
+  if (selectedAccount) {
+    try {
+      const token = ghTokenForAccount(cwd, selectedAccount);
+      if (!token?.ok) {
+        throw new Error(token?.error || "token unavailable");
+      }
+      let viewerPermission = null;
+      if (targetRepo) {
+        const probe = probeRepoAccount(cwd, targetRepo, selectedAccount);
+        if (!probe.ok) {
+          throw new Error(probe.error || `account ${selectedAccount} cannot access ${targetRepo}`);
+        }
+        viewerPermission = probe.viewerPermission;
+      }
+      authSelection = {
+        strategy: explicitAccount ? "explicit_account" : "identity_rule",
+        account: selectedAccount,
+        repo: targetRepo,
+        viewerPermission,
+        ruleId: rule?.id || null,
+        ruleScope: local.scope
+      };
+    } catch (error) {
+      authError = errorSummary(error);
+      warnings.push(`Selected GitHub account ${selectedAccount} is not ready: ${authError}`);
+    }
+  } else if (!local.ambiguous && targetRepo) {
+    try {
+      const inferred = inferRepoAuth(cwd, targetRepo);
+      if (inferred.summary?.account) {
+        selectedAccount = inferred.summary.account;
+      }
+      authSelection = inferred.summary
+        ? {
+            ...inferred.summary,
+            inferred: true,
+            localIdentityVerified: false
+          }
+        : null;
+    } catch (error) {
+      authError = errorSummary(error);
+      warnings.push(`Could not infer a GitHub API account for ${targetRepo}: ${authError}`);
+    }
+  }
+  const gitRoot = local.checkout.root || cwd;
+  const ssh = sshKeyReady(rule, cwd);
+  const expected = rule
+    ? {
+        githubAccount: rule.githubAccount || null,
+        gitEmail: rule.gitEmail || null,
+        gpgFormat: rule.gpgFormat || null,
+        signingKey: rule.signingKey || null,
+        sshKeyPath: rule.sshKeyPath || null,
+        sshKeyFingerprint: rule.sshKeyFingerprint || null
+      }
+    : {};
+  const actual = {
+    gitEmail: gitConfigValue(gitRoot, "user.email"),
+    gpgFormat: gitConfigValue(gitRoot, "gpg.format"),
+    signingKey: gitConfigValue(gitRoot, "user.signingkey")
+  };
+  const baseStatus = {
+    cwd,
+    freshness,
+    configFile: local.configFile,
+    configExists: local.configExists,
+    git: {
+      root: local.checkout.root,
+      branch: local.checkout.branch,
+      detached: local.checkout.detached,
+      head: local.checkout.head,
+      worktreeCount: local.checkout.worktreeCount,
+      available: local.checkout.available
+    },
+    repository: targetRepo,
+    identity: {
+      matched: Boolean(rule),
+      ambiguous: local.ambiguous,
+      ruleId: rule?.id || null,
+      ruleScope: local.scope,
+      matches: local.matches,
+      localOnly: true,
+      selectedAccount,
+      authError
+    },
+    expected,
+    actual,
+    ssh,
+    authSelection,
+    warnings
+  };
+  const fixes = identityFixes(baseStatus);
+  const ready = Boolean(
+    rule
+    && !local.ambiguous
+    && (!rule.githubAccount || authSelection)
+    && fixes.length === 0
+  );
+  return {
+    ...baseStatus,
+    identity: {
+      ...baseStatus.identity,
+      status: ready ? "ready" : (local.ambiguous ? "ambiguous" : (rule ? "needs_fix" : "unverified"))
+    },
+    abstract: {
+      kind: "identity_status",
+      repository: targetRepo,
+      branch: local.checkout.branch,
+      selectedAccount,
+      ruleMatched: Boolean(rule),
+      status: ready ? "ready" : (local.ambiguous ? "ambiguous" : (rule ? "needs_fix" : "unverified")),
+      fixes: fixes.length,
+      warnings: warnings.length
+    },
+    fixes: fixes.map((fix) => ({
+      ...fix,
+      shellPreview: commandPreview(fix.command)
+    }))
+  };
+}
+
+function authFromSelectedAccount({ cwd, repo, account, strategy, rule = null }) {
+  const token = ghTokenForAccount(cwd, account);
+  if (!token?.ok) {
+    throw new Error(`GitHub account ${account} is not available through gh auth token: ${token?.error || "unknown error"}`);
+  }
+  let viewerPermission = null;
+  if (repo) {
+    const probe = probeRepoAccount(cwd, repo, account);
+    if (!probe.ok) {
+      throw new Error(`GitHub account ${account} cannot access ${repo}: ${probe.error || "repo access check failed"}`);
+    }
+    viewerPermission = probe.viewerPermission;
+  }
+  return {
+    env: ghEnvForToken(token.token),
+    summary: {
+      strategy,
+      account,
+      repo,
+      viewerPermission,
+      ruleId: rule?.id || null
+    }
+  };
+}
+
 function permissionRank(permission) {
   return {
     ADMIN: 5,
@@ -1604,6 +2092,10 @@ function ghTokenForAccount(cwd, account) {
     }
   );
   if (result.status !== 0) {
+    const statusToken = ghTokenForAccountFromStatus(cwd, login);
+    if (statusToken?.ok) {
+      return setAuthCache(ghAccountTokenCache, key, statusToken);
+    }
     const failure = {
       account: login,
       ok: false,
@@ -1619,6 +2111,32 @@ function ghTokenForAccount(cwd, account) {
     error: token ? null : "gh auth token returned an empty token"
   };
   return setAuthCache(ghAccountTokenCache, key, value);
+}
+
+function ghTokenForAccountFromStatus(cwd, account) {
+  const result = safeRunGh(
+    ["auth", "status", "--show-token"],
+    {
+      cwd,
+      disableAuthResolution: true,
+      removeEnv: GITHUB_TOKEN_ENV_KEYS
+    }
+  );
+  if (result.status !== 0) {
+    return null;
+  }
+  const accounts = parseGhAccounts(outputText(result) || "", { includeTokens: true });
+  const match = accounts.find((candidate) => candidate.login === account);
+  if (!match?.token) {
+    return null;
+  }
+  return {
+    account,
+    ok: true,
+    token: match.token,
+    source: "gh_auth_status_show_token",
+    error: null
+  };
 }
 
 function ghEnvForToken(token) {
@@ -1664,69 +2182,10 @@ function probeRepoAccount(cwd, repo, account) {
   };
 }
 
-function ghAuthForCommand(args, options = {}) {
-  if (args[0] === "auth") {
-    return null;
-  }
-  const cwd = options.cwd || process.cwd();
-  const repo = options.repoName
-    || repoFromGhArgs(args)
-    || (commandDefaultsToCwdRepo(args) ? repoFromCwd(cwd) : null);
-  const explicitAccount = requireOptionalLogin(options.githubAccount, "githubAccount");
-  const cacheKey = `${cwd}\0${repo || ""}\0${explicitAccount || ""}`;
-  const cached = getAuthCache(ghRepoAuthCache, cacheKey);
-  if (cached !== undefined) {
-    return cached;
-  }
-
-  if (explicitAccount) {
-    const token = ghTokenForAccount(cwd, explicitAccount);
-    if (!token?.ok) {
-      throw new Error(`GitHub account ${explicitAccount} is not available through gh auth token: ${token?.error || "unknown error"}`);
-    }
-    const auth = {
-      env: ghEnvForToken(token.token),
-      summary: {
-        strategy: "explicit_account",
-        account: explicitAccount,
-        repo,
-        viewerPermission: null
-      }
-    };
-    return setAuthCache(ghRepoAuthCache, cacheKey, auth);
-  }
-
-  if (!repo) {
-    return setAuthCache(ghRepoAuthCache, cacheKey, null);
-  }
-
+function inferRepoAuth(cwd, repo) {
   const status = ghAuthStatus(cwd);
   if (!status.ok || status.accounts.length === 0) {
-    return setAuthCache(ghRepoAuthCache, cacheKey, null);
-  }
-
-  const owner = parseRepoName(repo).owner.toLowerCase();
-  const ownerAccount = status.accounts.find((account) => account.login.toLowerCase() === owner);
-  if (ownerAccount) {
-    const token = ghTokenForAccount(cwd, ownerAccount.login);
-    if (token?.ok) {
-      const auth = {
-        env: ghEnvForToken(token.token),
-        summary: {
-          strategy: "owner_login_match",
-          account: ownerAccount.login,
-          repo,
-          viewerPermission: null
-        }
-      };
-      return setAuthCache(ghRepoAuthCache, cacheKey, auth);
-    }
-  }
-
-  const probes = status.accounts.map((account) => probeRepoAccount(cwd, repo, account.login));
-  const successful = probes.filter((probe) => probe.ok);
-  if (successful.length === 0) {
-    const auth = {
+    return {
       env: null,
       summary: {
         strategy: "active_account_fallback",
@@ -1736,7 +2195,39 @@ function ghAuthForCommand(args, options = {}) {
         warnings: ["No authenticated gh account could be verified against the target repo; falling back to gh default account."]
       }
     };
-    return setAuthCache(ghRepoAuthCache, cacheKey, auth);
+  }
+
+  const owner = parseRepoName(repo).owner.toLowerCase();
+  const ownerAccount = status.accounts.find((account) => account.login.toLowerCase() === owner);
+  if (ownerAccount) {
+    const probe = probeRepoAccount(cwd, repo, ownerAccount.login);
+    if (probe.ok) {
+      const token = ghTokenForAccount(cwd, ownerAccount.login);
+      return {
+        env: token?.ok ? ghEnvForToken(token.token) : null,
+        summary: {
+          strategy: "owner_login_permission_probe",
+          account: ownerAccount.login,
+          repo,
+          viewerPermission: probe.viewerPermission
+        }
+      };
+    }
+  }
+
+  const probes = status.accounts.map((account) => probeRepoAccount(cwd, repo, account.login));
+  const successful = probes.filter((probe) => probe.ok);
+  if (successful.length === 0) {
+    return {
+      env: null,
+      summary: {
+        strategy: "active_account_fallback",
+        account: status.activeAccount,
+        repo,
+        viewerPermission: null,
+        warnings: ["No authenticated gh account could be verified against the target repo; falling back to gh default account."]
+      }
+    };
   }
 
   successful.sort((left, right) => {
@@ -1755,7 +2246,7 @@ function ghAuthForCommand(args, options = {}) {
   }
   const selected = successful[0];
   const token = ghTokenForAccount(cwd, selected.account);
-  const auth = {
+  return {
     env: token?.ok ? ghEnvForToken(token.token) : null,
     summary: {
       strategy: "repo_permission_probe",
@@ -1768,7 +2259,194 @@ function ghAuthForCommand(args, options = {}) {
       }))
     }
   };
-  return setAuthCache(ghRepoAuthCache, cacheKey, auth);
+}
+
+function ghAuthForCommand(args, options = {}) {
+  if (args[0] === "auth") {
+    return null;
+  }
+  const cwd = options.cwd || process.cwd();
+  const repo = options.repoName
+    || repoFromGhArgs(args)
+    || (commandDefaultsToCwdRepo(args) ? repoFromCwd(cwd) : null);
+  const explicitAccount = requireOptionalLogin(options.githubAccount, "githubAccount");
+  const localIdentity = resolveLocalIdentity(cwd, repo);
+  if (localIdentity.ambiguous) {
+    throw new Error(`GitHub identity selection for ${repo || cwd} is ambiguous: ${localIdentity.matches.join(", ")}. Fix the local identity rules file at ${localIdentity.configFile}.`);
+  }
+  const cacheKey = `${cwd}\0${repo || ""}\0${explicitAccount || ""}\0${localIdentity.cacheKey}\0${localIdentity.rule?.id || ""}`;
+  const cached = getAuthCache(ghRepoAuthCache, cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  if (explicitAccount) {
+    const auth = authFromSelectedAccount({
+      cwd,
+      repo,
+      account: explicitAccount,
+      strategy: "explicit_account"
+    });
+    return setAuthCache(ghRepoAuthCache, cacheKey, auth);
+  }
+
+  if (localIdentity.rule?.githubAccount) {
+    const auth = authFromSelectedAccount({
+      cwd,
+      repo,
+      account: localIdentity.rule.githubAccount,
+      strategy: "identity_rule",
+      rule: localIdentity.rule
+    });
+    auth.summary.ruleScope = localIdentity.scope;
+    auth.summary.configFile = localIdentity.configFile;
+    auth.summary.localOnly = true;
+    return setAuthCache(ghRepoAuthCache, cacheKey, auth);
+  }
+
+  if (!repo) {
+    return setAuthCache(ghRepoAuthCache, cacheKey, null);
+  }
+
+  return setAuthCache(ghRepoAuthCache, cacheKey, inferRepoAuth(cwd, repo));
+}
+
+async function githubIdentityStatus(input = {}) {
+  return buildIdentityStatus(input);
+}
+
+function selectedFixes(status, requestedKinds) {
+  const requested = requestedKinds == null
+    ? null
+    : new Set(normalizeStringArray(requestedKinds, "fixes"));
+  if (!requested) {
+    return status.fixes;
+  }
+  return status.fixes.filter((fix) => requested.has(fix.kind));
+}
+
+async function githubIdentityFixPreview(input = {}) {
+  cleanupApprovals();
+  const status = buildIdentityStatus(input);
+  if (status.identity.ambiguous) {
+    throw new Error(`GitHub identity selection is ambiguous: ${status.identity.matches.join(", ")}. Fix the local identity rules file at ${status.configFile}.`);
+  }
+  if (!status.identity.matched) {
+    throw new Error(`No local identity rule matched ${status.repository || status.cwd}. Create ${status.configFile} outside Git and retry.`);
+  }
+  const fixes = selectedFixes(status, input.fixes);
+  if (fixes.length === 0) {
+    return {
+      operation: "identity_fix",
+      cwd: status.cwd,
+      repository: status.repository,
+      identity: status.abstract,
+      fixes: [],
+      executableByTool: true,
+      approvalToken: null,
+      approvalText: "No identity fixes are needed."
+    };
+  }
+  const plan = {
+    kind: "identity_fix",
+    cwd: status.cwd,
+    repo: status.repository,
+    ruleId: status.identity.ruleId,
+    fixes: fixes.map((fix) => ({
+      kind: fix.kind,
+      command: fix.command,
+      cwd: fix.cwd,
+      reason: fix.reason
+    })),
+    riskNotes: [
+      "Updates local-only repository identity state or loads a local SSH key.",
+      "Does not write identity mappings to GitHub or to any Git-tracked plugin/config file."
+    ]
+  };
+  const token = randomBytes(18).toString("base64url");
+  const expiresAt = new Date(Date.now() + TOKEN_TTL_MS).toISOString();
+  approvals.set(token, {
+    token,
+    operation: "identity_fix",
+    payload: input,
+    plan,
+    hash: hashMutation(plan),
+    createdAt: new Date().toISOString(),
+    expiresAt
+  });
+  return {
+    operation: "identity_fix",
+    cwd: status.cwd,
+    repository: status.repository,
+    identity: status.abstract,
+    fixes: plan.fixes.map((fix) => ({
+      ...fix,
+      shellPreview: commandPreview(fix.command)
+    })),
+    riskNotes: plan.riskNotes,
+    approvalToken: token,
+    expiresAt,
+    executableByTool: true,
+    approvalText: "Approve identity_fix before calling github_identity_fix_execute with this token."
+  };
+}
+
+async function githubIdentityFixExecute(input = {}) {
+  cleanupApprovals();
+  const token = requireString(input.approvalToken, "approvalToken");
+  const approval = approvals.get(token);
+  if (!approval || approval.operation !== "identity_fix") {
+    throw new Error("approvalToken was not found, has expired, or is not for identity_fix. Run github_identity_fix_preview again.");
+  }
+  if (new Date(approval.expiresAt).getTime() <= Date.now()) {
+    approvals.delete(token);
+    throw new Error("approvalToken has expired. Run github_identity_fix_preview again.");
+  }
+  approvals.delete(token);
+  const before = buildIdentityStatus(approval.payload);
+  if (before.identity.ruleId !== approval.plan.ruleId || before.identity.ambiguous) {
+    throw new Error("Local identity rule changed after preview. Run github_identity_fix_preview again.");
+  }
+  const refreshedFixes = selectedFixes(before, approval.payload.fixes);
+  const refreshedPlan = {
+    ...approval.plan,
+    cwd: before.cwd,
+    repo: before.repository,
+    ruleId: before.identity.ruleId,
+    fixes: refreshedFixes.map((fix) => ({
+      kind: fix.kind,
+      command: fix.command,
+      cwd: fix.cwd,
+      reason: fix.reason
+    }))
+  };
+  if (hashMutation(refreshedPlan) !== approval.hash) {
+    throw new Error("Local identity fix plan changed after preview. Run github_identity_fix_preview again.");
+  }
+  const results = [];
+  for (const fix of approval.plan.fixes) {
+    const [bin, ...args] = fix.command;
+    const result = bin === GIT_BIN
+      ? runGit(args, { cwd: fix.cwd, maxBuffer: 20 * 1024 * 1024 })
+      : runSshAdd(args, { cwd: fix.cwd, maxBuffer: 20 * 1024 * 1024 });
+    results.push({
+      kind: fix.kind,
+      command: result.command,
+      cwd: result.cwd,
+      status: result.status,
+      stdout: truncate(result.stdout, DEFAULT_MAX_BYTES),
+      stderr: truncate(result.stderr, DEFAULT_MAX_BYTES)
+    });
+  }
+  const after = buildIdentityStatus(approval.payload);
+  return {
+    operation: "identity_fix",
+    cwd: approval.plan.cwd,
+    repository: approval.plan.repo,
+    results,
+    finalIdentity: after.abstract,
+    warnings: after.warnings
+  };
 }
 
 async function githubSetupStatus(input = {}) {
@@ -1793,6 +2471,11 @@ async function githubSetupStatus(input = {}) {
   const authText = outputText(auth) || "";
   const accounts = parseGhAccounts(authText);
   const authHint = accountAuthHint(targetRepo, accounts);
+  const identity = buildIdentityStatus({
+    cwd,
+    repo: targetRepo?.nameWithOwner,
+    githubAccount: input.githubAccount
+  });
 
   const ghAvailable = ghVersion.status === 0;
   const gitAvailable = gitVersion.status === 0;
@@ -1805,6 +2488,7 @@ async function githubSetupStatus(input = {}) {
     ghAvailable ? null : `gh is unavailable at ${GH_BIN}`,
     authOk ? null : "gh authentication is not ready or cannot be inspected from this environment",
     repoResolved ? null : "gh could not resolve the target repository",
+    ...identity.warnings,
     ...freshnessWarnings(freshness)
   ].filter(Boolean);
 
@@ -1858,7 +2542,8 @@ async function githubSetupStatus(input = {}) {
       branch: checkout.branch,
       detached: checkout.detached,
       activeAccount: accounts.find((account) => account.active)?.login || null,
-      selectedAccount: repo.auth?.account || null,
+      selectedAccount: identity.authSelection?.account || repo.auth?.account || null,
+      identityStatus: identity.identity.status,
       fetched: freshness.ok,
       warnings: warnings.length
     },
@@ -1879,6 +2564,7 @@ async function githubSetupStatus(input = {}) {
     repositoryTarget: targetRepo,
     repository: repoResolved ? repo.data : null,
     authSelection: repo.auth || null,
+    identity,
     warnings,
     nextSteps
   };
@@ -1909,9 +2595,15 @@ async function githubCurrentContext(input = {}) {
     origin: remote.status === 0 ? redactGitRemote(remote.stdout) : null
   };
   const github = repo.status === 0 ? repo.data : null;
+  const identity = buildIdentityStatus({
+    cwd,
+    repo: github?.nameWithOwner || repoFromCwd(cwd) || undefined,
+    githubAccount: input.githubAccount
+  });
   const warnings = [
     checkout.available ? null : "cwd is not inside a git repository",
     repo.status === 0 ? null : "gh could not resolve a repository for cwd",
+    ...identity.warnings,
     ...freshnessWarnings(freshness)
   ].filter(Boolean);
   return {
@@ -1927,12 +2619,14 @@ async function githubCurrentContext(input = {}) {
       head: compactSha(git.head),
       defaultBranch: github?.defaultBranchRef?.name || null,
       viewerPermission: github?.viewerPermission || null,
-      selectedAccount: repo.auth?.account || null,
+      selectedAccount: identity.authSelection?.account || repo.auth?.account || null,
+      identityStatus: identity.identity.status,
       fetched: freshness.ok,
       warnings: warnings.length
     },
     ghAuthStatus: auth.stdout.trim() || auth.stderr.trim(),
     authSelection: repo.auth || null,
+    identity,
     warnings
   };
 }
@@ -2364,8 +3058,17 @@ async function githubMyPullRequests(input = {}) {
   const repo = input.repo ? parseRepoName(input.repo).nameWithOwner : null;
   const requestedAuthor = requireOptionalLogin(input.author);
   const fallbackRepos = normalizeOptionalRepoList(input.fallbackRepos);
+  const identity = buildIdentityStatus({
+    cwd,
+    repo: repo || repoFromCwd(cwd) || undefined,
+    githubAccount: input.githubAccount
+  });
+  const selectedGithubAccount = input.githubAccount || identity.identity.selectedAccount || null;
   const auth = readActiveAccount(cwd);
-  const warnings = auth.ok ? [] : ["gh authentication status could not be inspected."];
+  const warnings = [
+    ...(auth.ok ? [] : ["gh authentication status could not be inspected."]),
+    ...identity.warnings
+  ];
   let discovery;
 
   try {
@@ -2375,11 +3078,11 @@ async function githubMyPullRequests(input = {}) {
       limit,
       repo,
       includeChecks,
-      githubAccount: input.githubAccount
+      githubAccount: selectedGithubAccount
     });
   } catch (error) {
     warnings.push(errorSummary(error));
-    const fallbackAuthor = requestedAuthor || auth.activeAccount;
+    const fallbackAuthor = requestedAuthor || identity.authSelection?.account || auth.activeAccount;
     if (!fallbackAuthor) {
       throw error;
     }
@@ -2390,24 +3093,25 @@ async function githubMyPullRequests(input = {}) {
         repos: repo ? fallbackRepos.filter((candidate) => candidate.toLowerCase() === repo.toLowerCase()) : fallbackRepos,
         limit,
         includeChecks,
-        githubAccount: input.githubAccount
+        githubAccount: selectedGithubAccount
       });
       discovery.subjectLogin = fallbackAuthor;
     } else if (input.allowSearchFallback === true) {
-      discovery = await readAuthoredPullRequestsFromSearch({ cwd, author: fallbackAuthor, repo, limit, githubAccount: input.githubAccount });
+      discovery = await readAuthoredPullRequestsFromSearch({ cwd, author: fallbackAuthor, repo, limit, githubAccount: selectedGithubAccount });
       discovery.subjectLogin = fallbackAuthor;
     } else {
       throw error;
     }
   }
 
-  const author = discovery.subjectLogin || requestedAuthor || auth.activeAccount || null;
+  const author = discovery.subjectLogin || requestedAuthor || identity.authSelection?.account || auth.activeAccount || null;
   const allWarnings = [
     ...warnings,
     ...discovery.warnings
   ];
   const evidence = {
     activeAccount: auth.activeAccount || (requestedAuthor ? auth.activeAccount : discovery.subjectLogin) || null,
+    selectedAccount: identity.authSelection?.account || selectedGithubAccount,
     author,
     strategy: discovery.strategy,
     commands: discovery.commands,
@@ -2419,7 +3123,9 @@ async function githubMyPullRequests(input = {}) {
     includeChecks,
     truncated: discovery.truncated === true,
     rateLimit: discovery.rateLimit || null,
-    auth
+    auth,
+    identity: identity.abstract,
+    authSelection: identity.authSelection
   };
   return {
     command: discovery.commands?.[0] || null,
@@ -3345,6 +4051,177 @@ async function githubSearch(input = {}) {
   };
 }
 
+function normalizeRefspecs(value) {
+  if (value == null || value === "") {
+    return [];
+  }
+  const values = Array.isArray(value) ? value : [value];
+  return values.map((item, index) => requireNonOptionString(item, `refspec[${index}]`));
+}
+
+function remoteProtocol(remoteUrl) {
+  if (/^https:\/\/(?:[^/@\s]+@)?github\.com\//i.test(remoteUrl)) {
+    return "https";
+  }
+  if (/^(git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(remoteUrl)) {
+    return "ssh";
+  }
+  return "other";
+}
+
+function writeAskpassScript() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "github-local-ops-askpass-"));
+  const scriptPath = path.join(dir, "askpass.sh");
+  fs.writeFileSync(
+    scriptPath,
+    "#!/bin/sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' x-access-token ;;\n  *) printf '%s\\n' \"$GITHUB_LOCAL_OPS_ASKPASS_TOKEN\" ;;\nesac\n",
+    { mode: 0o700 }
+  );
+  return scriptPath;
+}
+
+function buildGitPushPlan(input = {}) {
+  const cwd = cwdFrom(input);
+  const remote = input.remote == null ? "origin" : requireNonOptionString(input.remote, "remote");
+  const refspecs = normalizeRefspecs(input.refspec);
+  const remoteResult = safeRunGit(["remote", "get-url", remote], { cwd });
+  if (remoteResult.status !== 0) {
+    throw new Error(`Could not resolve git remote ${remote}: ${outputText(remoteResult) || `exit ${remoteResult.status}`}`);
+  }
+  const remoteUrl = trimOrNull(remoteResult.stdout);
+  const repo = parseRepoFromGitRemote(remoteUrl)?.nameWithOwner || null;
+  if (!repo) {
+    throw new Error(`Remote ${remote} does not look like a GitHub remote. Refusing identity-aware push.`);
+  }
+  const identity = buildIdentityStatus({ cwd, repo, githubAccount: input.githubAccount });
+  if (identity.identity.status !== "ready") {
+    throw new Error(`Identity for ${repo} is ${identity.identity.status}; run github_identity_fix_preview before pushing. Warnings: ${identity.warnings.join(" ")}`);
+  }
+  const protocol = remoteProtocol(remoteUrl);
+  if (protocol === "other") {
+    throw new Error(`Remote ${remote} uses an unsupported URL for identity-aware push: ${redactGitRemote(remoteUrl)}`);
+  }
+  if (protocol === "ssh" && identity.ssh.ready !== true) {
+    throw new Error(`SSH key for ${repo} is not confirmed in the agent; run github_identity_fix_preview first.`);
+  }
+  const args = protocol === "https" ? ["-c", "credential.helper=", "push"] : ["push"];
+  if (input.forceWithLease === true) {
+    args.push("--force-with-lease");
+  }
+  if (input.setUpstream === true) {
+    args.push("--set-upstream");
+  }
+  if (input.dryRun === true) {
+    args.push("--dry-run");
+  }
+  args.push(remote, ...refspecs);
+  return {
+    kind: "git_push",
+    bin: GIT_BIN,
+    args,
+    cwd,
+    repo,
+    remote,
+    remoteUrl: redactGitRemote(remoteUrl),
+    protocol,
+    githubAccount: identity.authSelection?.account || identity.identity.selectedAccount,
+    identity: identity.abstract,
+    riskNotes: [
+      "Pushes commits or refs to GitHub from the local checkout.",
+      "Uses GitHub Local Ops identity checks and command-scoped credentials for this push only."
+    ]
+  };
+}
+
+async function githubGitPushPreview(input = {}) {
+  cleanupApprovals();
+  const plan = buildGitPushPlan(input);
+  const token = randomBytes(18).toString("base64url");
+  const expiresAt = new Date(Date.now() + TOKEN_TTL_MS).toISOString();
+  approvals.set(token, {
+    token,
+    operation: "git_push",
+    payload: input,
+    plan,
+    hash: hashMutation(plan),
+    createdAt: new Date().toISOString(),
+    expiresAt
+  });
+  return {
+    operation: "git_push",
+    repository: plan.repo,
+    identity: plan.identity,
+    command: {
+      executable: plan.bin,
+      args: plan.args,
+      cwd: plan.cwd,
+      shellPreview: commandPreview([plan.bin, ...plan.args])
+    },
+    remote: {
+      name: plan.remote,
+      url: plan.remoteUrl,
+      protocol: plan.protocol
+    },
+    riskNotes: plan.riskNotes,
+    approvalToken: token,
+    expiresAt,
+    executableByTool: true,
+    approvalText: "Approve git_push before calling github_git_push_execute with this token."
+  };
+}
+
+async function githubGitPushExecute(input = {}) {
+  cleanupApprovals();
+  const token = requireString(input.approvalToken, "approvalToken");
+  const approval = approvals.get(token);
+  if (!approval || approval.operation !== "git_push") {
+    throw new Error("approvalToken was not found, has expired, or is not for git_push. Run github_git_push_preview again.");
+  }
+  if (new Date(approval.expiresAt).getTime() <= Date.now()) {
+    approvals.delete(token);
+    throw new Error("approvalToken has expired. Run github_git_push_preview again.");
+  }
+  approvals.delete(token);
+  const refreshed = buildGitPushPlan(approval.payload);
+  if (hashMutation(refreshed) !== approval.hash) {
+    throw new Error("Git push plan changed after preview. Run github_git_push_preview again.");
+  }
+  const env = {};
+  if (refreshed.protocol === "https") {
+    const tokenInfo = ghTokenForAccount(refreshed.cwd, refreshed.githubAccount);
+    if (!tokenInfo?.ok) {
+      throw new Error(`GitHub account ${refreshed.githubAccount} is not available through gh auth token: ${tokenInfo?.error || "unknown error"}`);
+    }
+    env.GIT_ASKPASS = writeAskpassScript();
+    env.GIT_TERMINAL_PROMPT = "0";
+    env.GITHUB_LOCAL_OPS_ASKPASS_TOKEN = tokenInfo.token;
+  }
+  const result = runGit(refreshed.args, {
+    cwd: refreshed.cwd,
+    env,
+    maxBuffer: 20 * 1024 * 1024
+  });
+  return {
+    operation: "git_push",
+    repository: refreshed.repo,
+    identity: refreshed.identity,
+    command: {
+      executable: refreshed.bin,
+      args: refreshed.args,
+      cwd: refreshed.cwd,
+      shellPreview: commandPreview([refreshed.bin, ...refreshed.args])
+    },
+    remote: {
+      name: refreshed.remote,
+      url: refreshed.remoteUrl,
+      protocol: refreshed.protocol
+    },
+    stdout: truncate(result.stdout, input.maxBytes || DEFAULT_MAX_BYTES),
+    stderr: truncate(result.stderr, input.maxBytes || DEFAULT_MAX_BYTES),
+    status: result.status
+  };
+}
+
 function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccount = null) {
   const repo = payload.repo ? parseRepoName(payload.repo).nameWithOwner : undefined;
   const riskNotes = ["This is a public GitHub write unless the target repository is private."];
@@ -3633,6 +4510,20 @@ function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccou
       riskNotes.push(publish ? "Creates and publishes a release object." : "Creates a draft release by default.");
       return command(args);
     }
+    case "pr_create_draft": {
+      const title = requireString(payload.title, "payload.title");
+      const body = requireString(payload.body, "payload.body");
+      const args = ["pr", "create", "--draft", "--title", title, "--body", body];
+      if (payload.base) {
+        args.push("--base", requireNonOptionString(payload.base, "payload.base"));
+      }
+      if (payload.head) {
+        args.push("--head", requireNonOptionString(payload.head, "payload.head"));
+      }
+      riskNotes.push("Creates a draft pull request.");
+      riskNotes.push("Uses command-scoped GitHub Local Ops identity instead of relying on the global active gh account.");
+      return command(args);
+    }
     default:
       throw new Error(`Unsupported mutation operation: ${operation}`);
   }
@@ -3874,11 +4765,15 @@ function hashMutation(plan) {
     args: plan.args || null,
     cwd: plan.cwd,
     repo: plan.repo || null,
+    remote: plan.remote || null,
+    remoteUrl: plan.remoteUrl || null,
+    protocol: plan.protocol || null,
     githubAccount: plan.githubAccount || null,
     number: plan.number || null,
     approvedReplies: plan.approvedReplies || null,
     prBody: plan.prBody || null,
     reviewers: plan.reviewers || null,
+    fixes: plan.fixes || null,
     requestBody: plan.requestBody || null,
     stdin: plan.stdin || null
   })).digest("hex");
@@ -4203,6 +5098,9 @@ function cleanupApprovals() {
 const HANDLERS = {
   github_setup_status: githubSetupStatus,
   github_current_context: githubCurrentContext,
+  github_identity_status: githubIdentityStatus,
+  github_identity_fix_preview: githubIdentityFixPreview,
+  github_identity_fix_execute: githubIdentityFixExecute,
   github_repo_view: githubRepoView,
   github_pr_list: githubPrList,
   github_my_pull_requests: githubMyPullRequests,
@@ -4219,6 +5117,8 @@ const HANDLERS = {
   github_release_list: githubReleaseList,
   github_search: githubSearch,
   github_mutation_preview: githubMutationPreview,
+  github_git_push_preview: githubGitPushPreview,
+  github_git_push_execute: githubGitPushExecute,
   github_mutation_execute: githubMutationExecute
 };
 

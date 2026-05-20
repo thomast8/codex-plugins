@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "name": "github-local-ops",
   "displayName": "GitHub Local Ops",
-  "summary": "Use local GitHub CLI authentication, repo-aware account selection, and git state for repository, PR, CI, issue, release, and publishing workflows.",
+  "summary": "Use local GitHub CLI authentication, local-only identity rules, repo-aware account selection, and git state for repository, PR, CI, issue, release, and publishing workflows.",
   "purpose": "Use this plugin when Codex needs GitHub evidence or GitHub write previews from the local machine, especially when the hosted connector is unavailable or when local git state matters.",
   "whenToUse": [
     "Inspect repositories, pull requests, review threads, checks, workflow runs, issues, releases, or search results.",
-    "Prepare commits, pushes, draft pull requests, reviewer-ready PR bodies, or release notes.",
+    "Prepare commits, identity-aware pushes, draft pull requests, reviewer-ready PR bodies, or release notes.",
     "Debug GitHub Actions using local gh authentication and provider-style readbacks.",
     "Preview public GitHub writes before asking for explicit approval."
   ],
@@ -26,18 +26,20 @@
   },
   "safety": {
     "publicSafe": true,
-    "authModel": "Uses existing gh CLI authentication and local git configuration. Repo-scoped operations choose an authenticated account per command with GH_TOKEN from gh auth token --user instead of changing the global active gh account.",
-    "writeModel": "The bundled MCP manifest enables preview-owned execution; mutation previews produce approval tokens and exact commands before execution.",
+    "authModel": "Uses existing gh CLI authentication plus local-only identity rules from ~/.Codex/plugins/github-local-ops/identity-rules.json or GITHUB_LOCAL_OPS_IDENTITY_FILE. Repo-scoped operations choose an authenticated account per command with command-scoped credentials instead of changing the global active gh account.",
+    "writeModel": "The bundled MCP manifest enables preview-owned execution; mutation, identity-fix, and push previews produce approval tokens and exact commands before execution.",
     "excludedState": [
       "GitHub tokens",
       "gh auth stores",
       "private repository data",
       "workflow logs fetched at runtime",
-      "local git credentials"
+      "local git credentials",
+      "identity-rules.json"
     ]
   },
   "installNotes": [
     "Requires gh and git on the target machine.",
+    "Keep identity rules local-only; never commit identity-rules.json to a Git repository.",
     "Run setup/status before provider writes or account-sensitive reads.",
     "Custom MCP launchers must pass --enable-public-writes, or set GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true outside chat, before github_mutation_execute can apply an approved preview."
   ]

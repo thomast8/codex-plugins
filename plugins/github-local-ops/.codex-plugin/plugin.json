@@ -1,7 +1,7 @@
 {
   "name": "github-local-ops",
   "version": "0.1.0",
-  "description": "Local GitHub workflows for repos, PRs, issues, Actions, releases, and publishing, backed by gh and git.",
+  "description": "Local GitHub workflows for repos, PRs, issues, Actions, releases, publishing, and identity-aware pushes, backed by gh and git.",
   "author": {
     "name": "Thomas Tiotto",
     "url": "https://github.com/thomast8"
@@ -23,8 +23,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "GitHub Local Ops",
-    "shortDescription": "GitHub workflows backed by gh and git",
-    "longDescription": "Use local GitHub CLI authentication to inspect repositories, triage pull requests, debug Actions checks, handle review feedback, manage issues and releases, and prepare code changes for review. Includes readiness checks and preview-first public writes with explicit approval before execution.",
+    "shortDescription": "Identity-aware GitHub workflows",
+    "longDescription": "Use local GitHub CLI authentication and local-only identity rules to inspect repositories, triage pull requests, debug Actions checks, handle review feedback, manage issues and releases, and prepare code changes for review. Includes readiness checks, identity fix previews, identity-aware pushes, and preview-first public writes with explicit approval before execution.",
     "developerName": "Thomas Tiotto",
     "category": "Productivity",
     "capabilities": [
