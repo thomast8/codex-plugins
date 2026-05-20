@@ -10,10 +10,12 @@ review to the risk and size of the change.
 
 When this skill is invoked, either because the user explicitly requested
 `review-code` or because standing guidance requires a review gate before PR,
-push, or non-trivial change completion, treat that as explicit authorization to
-use Codex review agents when warranted by the risk matrix below. This is
-intended to satisfy runtimes whose `spawn_agent` tool requires an explicit
-request for sub-agents, while avoiding slow fan-out for small low-risk changes.
+push, PR review, branch review, or non-trivial change completion, treat the
+skill invocation itself as standing explicit authorization to use Codex review
+agents. Whether agents are actually spawned, and which lanes run, is determined
+by the risk matrix below. This is intended to satisfy runtimes whose
+`spawn_agent` tool requires an explicit request for sub-agents, while avoiding
+slow fan-out for small low-risk changes.
 
 ## When to run
 
@@ -36,6 +38,88 @@ Choose the lightest review mode that still matches the risk:
 Do not keep re-running sub-agent reviews after every tiny follow-up fix. Once
 the change is small, well covered, and the prior review findings are addressed,
 prefer a local final sanity check plus targeted verification.
+
+## Finding Reproduction Gate
+
+Treat every suspected issue as a candidate until it is reproduced. Only present
+confirmed findings to the user as review issues.
+
+Reproduce each candidate finding with at least one concrete evidence source:
+
+- A failing test, focused script, API call, CLI command, or manual app flow that
+  exercises the real changed code path.
+- A small ad-hoc probe that imports the real modules and drives realistic inputs
+  when a full service is unavailable.
+- A deterministic trace through the changed code with concrete input/state,
+  only when execution is blocked by missing credentials, unavailable services,
+  or runtime tooling.
+
+Shape reproduction evidence as reviewer-runnable verification, not private
+debugging notes. Prefer real commands that a reviewer could copy from the PR
+branch and understand before running. Exercise the real app, CLI, service,
+endpoint, database, filesystem, provider, or existing focused test whenever
+possible, and include the expected output or state.
+
+Use the smallest understandable command or flow that proves the behavior:
+
+- Real CLI invocation.
+- API call against the local app or service.
+- App flow that reaches the changed behavior.
+- Database query or service readback that shows state before or after the
+  action.
+- Filesystem inspection when the claim is about written, missing, or leftover
+  files.
+- Existing focused integration or end-to-end test when it directly exercises
+  the changed behavior.
+
+Use Python snippets, synthetic helpers, or scratch scripts only when no suitable
+CLI, API, fixture, committed script, endpoint, or test helper exists. Keep them
+short, import the real modules, drive realistic inputs, and explain why this is
+the closest real-code check. Do not leave the final review as a pointer to an
+opaque private harness; translate the evidence into reviewer-shaped steps and
+observable state.
+
+Every reproduction should make the state transition obvious. Optimize for
+reviewer understanding and confidence over command efficiency. Do not publish
+command-only checklists: the reviewer must be able to see what claim is being
+validated, why the setup is safe, what output or state is expected, what was
+observed, and what would count as failure. For install, deploy, migration,
+auth, external-service, or data-destructive paths, use isolated temp state,
+dry-run or fake-target paths, or a clearly marked safe test target so reviewers
+can see why production data or deployments will not be touched.
+
+For each confirmed finding, capture:
+
+- Claim: what behavior is wrong and why it matters.
+- Safety boundary or setup: why the repro does not touch production data or
+  external systems, or what dependency blocks a safer run.
+- Exact command, API call, app flow, or deterministic trace.
+- Expected behavior.
+- Observed behavior.
+- Failure signal: the output, state transition, assertion, or readback that
+  proves the issue.
+
+Make this rubric visible in the final review for every confirmed finding. Do
+not bury reproduction in internal notes or summarize it as "reproduced" without
+showing the claim, setup, command or trace, expected behavior, observed behavior,
+and failure signal.
+
+The coordinator must attempt reproduction before the final review response for
+every candidate that would otherwise be listed as an issue. Include the
+reproduction command, observed output, state transition, or concrete trace in a
+reviewer-shaped format in the final review. If the candidate cannot be
+reproduced, do not list it as a confirmed finding. Put it under "Unverified
+Risks" only when it is still useful, and state exactly what blocked
+reproduction. Drop or downgrade candidates that turn out to be only missing
+coverage, stale docs, or theoretical concerns unless they reproduce as
+user-visible behavior, security exposure, data loss, or a broken contract.
+
+Sub-agents should also try to reproduce their own candidate findings using
+sandbox-safe commands. If reproduction would need approval or unavailable
+external state, they must record the exact command or setup that would prove it,
+why it matters, and the closest evidence they used instead. Their final lane
+reports should use the same reviewer-shaped evidence fields for any confirmed
+finding.
 
 ## Diff scope
 
@@ -110,7 +194,7 @@ current assistant and report that the review used the sequential fallback.
 ```
 spawn_agent(
   agent_type: "review-correctness",
-  message: "Review <self-contained intent + repo path + diff scope>. Lens: correctness only - logic errors, off-by-ones, edge cases, null/empty handling, race conditions, error-path bugs, incorrect async/await, state-machine holes. Do not run git fetch, git pull, gt sync, or any network git operation. Return findings first with file/line references, severity, reasoning, and concrete fixes. If no issues, say so and note residual risk."
+  message: "Review <self-contained intent + repo path + diff scope>. Lens: correctness only - logic errors, off-by-ones, edge cases, null/empty handling, race conditions, error-path bugs, incorrect async/await, state-machine holes. Do not run git fetch, git pull, gt sync, or any network git operation. Reproduce each candidate finding before listing it as an issue, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
 )
 ```
 
@@ -118,7 +202,7 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-design",
-  message: "Review <self-contained intent + repo path + diff scope>. Lens: design only - API shape, naming, abstraction boundaries, coupling, dead or speculative code, premature abstractions, duplication, maintainability. Do not run git fetch, git pull, gt sync, or any network git operation. Return findings first with file/line references, severity, reasoning, and concrete fixes. If no issues, say so and note residual risk."
+  message: "Review <self-contained intent + repo path + diff scope>. Lens: design only - API shape, naming, abstraction boundaries, coupling, dead or speculative code, premature abstractions, duplication, maintainability. Do not run git fetch, git pull, gt sync, or any network git operation. Reproduce each candidate finding before listing it as an issue, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
 )
 ```
 
@@ -126,7 +210,7 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-security",
-  message: "Review <self-contained intent + repo path + diff scope>. Lens: security only - authn/authz, input validation, injection (SQL, command, path, template), SSRF, secrets in code/logs, unsafe deserialization, crypto misuse, dependency risk. Do not run git fetch, git pull, gt sync, or any network git operation. Return findings first with file/line references, severity, reasoning, and concrete fixes. If no issues, say so and note residual risk."
+  message: "Review <self-contained intent + repo path + diff scope>. Lens: security only - authn/authz, input validation, injection (SQL, command, path, template), SSRF, secrets in code/logs, unsafe deserialization, crypto misuse, dependency risk. Do not run git fetch, git pull, gt sync, or any network git operation. Reproduce each candidate finding before listing it as an issue, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
 )
 ```
 
@@ -134,13 +218,18 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-tests",
-  message: "Review <self-contained intent + repo path + diff scope>. Lens: tests only - do tests actually exercise the changed behavior? mocks hiding real integration? missing edge cases? flaky timing? assertions that would pass on a broken implementation? Do not run git fetch, git pull, gt sync, or any network git operation. Return findings first with file/line references, severity, reasoning, and concrete fixes. If no issues, say so and note residual risk."
+  message: "Review <self-contained intent + repo path + diff scope>. Lens: tests only - do tests actually exercise the changed behavior? mocks hiding real integration? missing edge cases? flaky timing? assertions that would pass on a broken implementation? Do not run git fetch, git pull, gt sync, or any network git operation. Reproduce each candidate test gap before listing it as an issue, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
 )
 ```
 
 ## Merge
 
 Use the Cross-Model Evidence Collection Protocol in `references/codex-evidence-collection.md` when that reference is available: normalize each lane's report, dedupe findings across lanes (same issue raised by multiple agents = high confidence), and preserve strengths.
+
+Before presenting findings, apply the Finding Reproduction Gate. Sub-agent
+agreement raises confidence, but it does not replace reproduction. The final
+review should list only reproduced findings, with unreproduced concerns either
+dropped or placed in "Unverified Risks" with the blocker.
 
 If the current task is implementation, PR preparation, or finishing a change, fix
 confirmed issues and valid low-risk suggestions before claiming done. If the user
