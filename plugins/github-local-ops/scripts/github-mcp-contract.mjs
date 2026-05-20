@@ -14,13 +14,27 @@ const replyLog = join(fakeBinDir, "replies.jsonl");
 const reviewerLog = join(fakeBinDir, "reviewers.jsonl");
 const bodyFile = join(fakeBinDir, "body.txt");
 const checksFile = join(fakeBinDir, "checks.txt");
+const stateFile = join(fakeBinDir, "state.json");
 const fakeGh = join(fakeBinDir, "gh.mjs");
 const fakeGit = join(fakeBinDir, "git.mjs");
+fs.writeFileSync(stateFile, JSON.stringify({
+  detached: false,
+  head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  prListMode: "match",
+  prNumber: 292
+}), "utf8");
 
 fs.writeFileSync(fakeGh, `#!/usr/bin/env node
 import fs from "node:fs";
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "gh", args, cwd: process.cwd() }) + "\\n");
+function state() {
+  try {
+    return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
 if (args[0] === "--version") {
   console.log("gh version 2.0.0");
   process.exit(0);
@@ -274,6 +288,67 @@ if (args[0] === "api" && args[1] === "--method" && args[2] === "POST" && args[3]
   }));
   process.exit(0);
 }
+if (args[0] === "pr" && args[1] === "list") {
+  const current = state();
+  const head = current.head || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const basePr = {
+    author: { login: "reviewer" },
+    baseRefName: "main",
+    headRefName: "feature/review",
+    headRefOid: head,
+    isDraft: false,
+    number: current.prNumber || 292,
+    reviewDecision: "REVIEW_REQUIRED",
+    reviewRequests: [],
+    state: "OPEN",
+    title: "Fixture PR",
+    updatedAt: "2026-05-19T10:00:00Z",
+    url: "https://github.com/owner/repo/pull/" + (current.prNumber || 292)
+  };
+  if (current.prListMode === "empty") {
+    console.log(JSON.stringify([]));
+    process.exit(0);
+  }
+  if (current.prListMode === "multi") {
+    console.log(JSON.stringify([
+      basePr,
+      { ...basePr, number: 293, headRefName: "feature/duplicate", url: "https://github.com/owner/repo/pull/293" }
+    ]));
+    process.exit(0);
+  }
+  console.log(JSON.stringify([basePr]));
+  process.exit(0);
+}
+if (args[0] === "pr" && args[1] === "view") {
+  const current = state();
+  const target = args[2] || "feature/review";
+  const number = /^[0-9]+$/.test(target) ? Number(target) : (current.prNumber || 292);
+  const head = current.head || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const viewHead = current.viewHead || head;
+  console.log(JSON.stringify({
+    number,
+    title: "Fixture PR",
+    state: "OPEN",
+    isDraft: false,
+    author: { login: "reviewer" },
+    baseRefName: "main",
+    baseRefOid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    headRefName: "feature/review",
+    headRefOid: viewHead,
+    body: "Initial PR body",
+    changedFiles: 1,
+    files: [{ path: "src/example.js" }],
+    reviewDecision: "REVIEW_REQUIRED",
+    reviewRequests: [],
+    latestReviews: [],
+    mergeable: "MERGEABLE",
+    mergeStateStatus: "CLEAN",
+    statusCheckRollup: null,
+    updatedAt: "2026-05-19T10:00:00Z",
+    url: "https://github.com/owner/repo/pull/" + number
+  }));
+  process.exit(0);
+}
 if (args[0] === "pr" && args[1] === "checks") {
   const checkMode = fs.existsSync(process.env.FAKE_CHECKS_FILE)
     ? fs.readFileSync(process.env.FAKE_CHECKS_FILE, "utf8").trim()
@@ -312,6 +387,13 @@ fs.writeFileSync(fakeGit, `#!/usr/bin/env node
 import fs from "node:fs";
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "git", args, cwd: process.cwd() }) + "\\n");
+function state() {
+  try {
+    return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
 if (args[0] === "--version") {
   console.log("git version 2.0.0");
   process.exit(0);
@@ -321,7 +403,27 @@ if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
   process.exit(0);
 }
 if (args[0] === "rev-parse" && args[1] === "HEAD") {
-  console.log("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  console.log(state().head || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  process.exit(0);
+}
+if (args[0] === "symbolic-ref" && args[1] === "-q" && args[2] === "--short" && args[3] === "HEAD") {
+  if (state().detached) {
+    process.exit(1);
+  }
+  console.log("feature/review");
+  process.exit(0);
+}
+if (args[0] === "worktree" && args[1] === "list" && args[2] === "--porcelain") {
+  console.log("worktree " + process.cwd());
+  console.log("HEAD " + (state().head || "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
+  if (state().detached) {
+    console.log("");
+    console.log("worktree /tmp/other-worktree");
+    console.log("HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    console.log("detached");
+  } else {
+    console.log("branch refs/heads/feature/review");
+  }
   process.exit(0);
 }
 if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name") {
@@ -337,11 +439,25 @@ if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count
   process.exit(0);
 }
 if (args[0] === "branch" && args[1] === "--show-current") {
+  if (state().detached) {
+    console.log("");
+    process.exit(0);
+  }
   console.log("feature/review");
   process.exit(0);
 }
+if (args[0] === "remote") {
+  if (args.length === 1) {
+    console.log("origin");
+    process.exit(0);
+  }
+}
 if (args[0] === "remote" && args[1] === "get-url" && args[2] === "origin") {
   console.log("https://token@github.com/owner/repo.git");
+  process.exit(0);
+}
+if (args[0] === "fetch") {
+  console.log("");
   process.exit(0);
 }
 console.error("unexpected git args " + JSON.stringify(args));
@@ -372,7 +488,8 @@ const child = spawn(serverConfig.command, serverConfig.args, {
     FAKE_REPLY_LOG: replyLog,
     FAKE_REVIEWER_LOG: reviewerLog,
     FAKE_BODY_FILE: bodyFile,
-    FAKE_CHECKS_FILE: checksFile
+    FAKE_CHECKS_FILE: checksFile,
+    FAKE_STATE_FILE: stateFile
   }
 });
 
@@ -494,6 +611,92 @@ async function main() {
   if (setup.git?.origin !== "https://[redacted]@github.com/owner/repo.git") {
     throw new Error("github_setup_status did not redact credentialed origin URL");
   }
+
+  const detachedHead = "dddddddddddddddddddddddddddddddddddddddd";
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: true,
+    head: detachedHead,
+    prListMode: "match",
+    prNumber: 292
+  }), "utf8");
+  const callsBeforeDetachedContext = readCommandLog().length;
+  const detachedContext = await request("tools/call", {
+    name: "github_current_context",
+    arguments: { cwd: pluginRoot, autoFetch: true }
+  });
+  const detachedContextJson = jsonContent(detachedContext);
+  if (detachedContextJson.git?.detached !== true || detachedContextJson.git?.branch !== null) {
+    throw new Error("github_current_context did not report detached checkout state");
+  }
+  if (detachedContextJson.freshness?.mode !== "isolated-detached") {
+    throw new Error("detached autoFetch did not use isolated freshness mode");
+  }
+  const detachedFetchCalls = readCommandLog()
+    .slice(callsBeforeDetachedContext)
+    .filter((call) => call.bin === "git" && call.args[0] === "fetch");
+  if (detachedFetchCalls.length !== 1 || detachedFetchCalls[0].args[3] !== "origin") {
+    throw new Error("detached autoFetch did not fetch from the resolved remote");
+  }
+  if (detachedFetchCalls[0].args.includes("--all")) {
+    throw new Error("detached autoFetch must not update shared remote-tracking refs with fetch --all");
+  }
+  if (!detachedFetchCalls[0].args.includes("--no-tags") || !detachedFetchCalls[0].args.includes("--refmap=")) {
+    throw new Error("detached autoFetch must disable tag fetching and configured remote refmaps");
+  }
+  if (!String(detachedFetchCalls[0].args[4] || "").startsWith("+refs/heads/*:refs/codex-fetch/")) {
+    throw new Error("detached autoFetch did not fetch into an isolated refs/codex-fetch namespace");
+  }
+
+  const detachedPrView = await request("tools/call", {
+    name: "github_pr_view",
+    arguments: { cwd: pluginRoot, repo: "owner/repo", autoFetch: false }
+  });
+  const detachedPrViewJson = jsonContent(detachedPrView);
+  if (detachedPrViewJson.prIdentity?.strategy !== "detached_head_sha") {
+    throw new Error("github_pr_view did not resolve detached checkout by exact HEAD SHA");
+  }
+  if (detachedPrViewJson.prIdentity?.number !== 292 || detachedPrViewJson.pullRequest?.headRefOid !== detachedHead) {
+    throw new Error("github_pr_view resolved the wrong PR for detached HEAD");
+  }
+  if (!detachedPrViewJson.resolutionCommands?.[0]?.includes("pr")) {
+    throw new Error("github_pr_view did not expose detached PR resolution evidence");
+  }
+
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: true,
+    head: detachedHead,
+    viewHead: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    prListMode: "match",
+    prNumber: 292
+  }), "utf8");
+  const staleDetachedPr = await request("tools/call", {
+    name: "github_pr_view",
+    arguments: { cwd: pluginRoot, repo: "owner/repo", autoFetch: false }
+  });
+  if (staleDetachedPr.result?.isError !== true) {
+    throw new Error("github_pr_view should fail closed when the PR head changes after detached resolution");
+  }
+
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: true,
+    head: detachedHead,
+    prListMode: "empty",
+    prNumber: 292
+  }), "utf8");
+  const missingDetachedPr = await request("tools/call", {
+    name: "github_pr_view",
+    arguments: { cwd: pluginRoot, repo: "owner/repo", autoFetch: false }
+  });
+  if (missingDetachedPr.result?.isError !== true) {
+    throw new Error("github_pr_view should fail closed when detached HEAD does not map to exactly one PR");
+  }
+
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292
+  }), "utf8");
 
   const myPullRequests = await request("tools/call", {
     name: "github_my_pull_requests",

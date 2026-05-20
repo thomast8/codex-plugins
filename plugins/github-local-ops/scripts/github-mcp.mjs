@@ -178,7 +178,7 @@ const TOOLS = [
       ...autoFetchSchema,
       number: {
         type: ["integer", "string"],
-        description: "PR number, URL, or branch. Defaults to the current branch PR."
+        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA."
       },
       fields: {
         type: "array",
@@ -196,7 +196,7 @@ const TOOLS = [
       ...maxBytesSchema,
       number: {
         type: ["integer", "string"],
-        description: "PR number, URL, or branch. Defaults to the current branch PR."
+        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA."
       },
       patch: {
         type: "boolean",
@@ -234,7 +234,7 @@ const TOOLS = [
       ...autoFetchSchema,
       number: {
         type: ["integer", "string"],
-        description: "PR number, URL, or branch. Defaults to the current branch PR."
+        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA."
       },
       requiredOnly: {
         type: "boolean",
@@ -664,18 +664,61 @@ function compactSha(value) {
   return trimmed ? trimmed.slice(0, 12) : null;
 }
 
+function inspectGitCheckout(cwd) {
+  const gitRoot = safeRunGit(["rev-parse", "--show-toplevel"], { cwd });
+  if (gitRoot.status !== 0) {
+    return {
+      available: false,
+      reason: "cwd is not inside a git repository",
+      root: null,
+      branch: null,
+      detached: null,
+      head: null,
+      worktreeCount: null
+    };
+  }
+
+  const root = gitRoot.stdout.trim();
+  const branch = safeRunGit(["symbolic-ref", "-q", "--short", "HEAD"], { cwd: root });
+  const head = safeRunGit(["rev-parse", "HEAD"], { cwd: root });
+  const worktrees = safeRunGit(["worktree", "list", "--porcelain"], { cwd: root });
+  const worktreeCount = worktrees.status === 0
+    ? (worktrees.stdout.match(/^worktree /gm) || []).length
+    : null;
+
+  return {
+    available: true,
+    reason: null,
+    root,
+    branch: branch.status === 0 ? trimOrNull(branch.stdout) : null,
+    detached: branch.status !== 0,
+    head: head.status === 0 ? trimOrNull(head.stdout) : null,
+    worktreeCount
+  };
+}
+
+function detachedFetchNamespace(root) {
+  const rootHash = createHash("sha256").update(root || "").digest("hex").slice(0, 10);
+  const unique = `${Date.now().toString(36)}-${process.pid}-${randomBytes(4).toString("hex")}`;
+  return `github-local-ops/${rootHash}/${unique}`;
+}
+
+function detachedFetchRefspec(namespace) {
+  return `+refs/heads/*:refs/codex-fetch/${namespace}/*`;
+}
+
 function maybeAutoFetch(input = {}) {
   const cwd = cwdFrom(input);
   if (input.autoFetch !== true) {
     return { attempted: false, ok: null, skippedReason: "autoFetch disabled" };
   }
 
-  const gitRoot = safeRunGit(["rev-parse", "--show-toplevel"], { cwd });
-  if (gitRoot.status !== 0) {
+  const checkout = inspectGitCheckout(cwd);
+  if (!checkout.available) {
     return { attempted: false, ok: null, skippedReason: "cwd is not inside a git repository" };
   }
 
-  const root = gitRoot.stdout.trim();
+  const root = checkout.root;
   const remotes = safeRunGit(["remote"], { cwd: root });
   const remoteNames = remotes.status === 0
     ? remotes.stdout.split("\n").map((remote) => remote.trim()).filter(Boolean)
@@ -699,7 +742,8 @@ function maybeAutoFetch(input = {}) {
     }
   }
 
-  const cacheKey = `${root}\0${remoteNames.join("\0")}`;
+  const fetchMode = checkout.detached ? "isolated-detached" : "shared";
+  const cacheKey = `${root}\0${fetchMode}\0${remoteNames.join("\0")}`;
   const cached = fetchCache.get(cacheKey);
   if (cached && Date.now() - cached.checkedAt <= FETCH_TTL_MS) {
     return {
@@ -710,13 +754,26 @@ function maybeAutoFetch(input = {}) {
   }
 
   const fetchedAt = new Date().toISOString();
-  const fetch = safeRunGit(["fetch", "--all"], { cwd: root });
+  const remoteName = remoteNames.includes("origin") ? "origin" : remoteNames[0];
+  const isolatedNamespace = checkout.detached ? detachedFetchNamespace(root) : null;
+  const refspec = isolatedNamespace ? detachedFetchRefspec(isolatedNamespace) : null;
+  const fetchArgs = checkout.detached
+    ? ["fetch", "--no-tags", "--refmap=", remoteName, refspec]
+    : ["fetch", "--all"];
+  const fetch = safeRunGit(fetchArgs, { cwd: root });
   const freshness = {
     attempted: true,
     ok: fetch.status === 0,
     command: fetch.command,
     cwd: root,
     remotes: remoteNames,
+    mode: fetchMode,
+    detached: checkout.detached,
+    branch: checkout.branch,
+    head: compactSha(checkout.head),
+    worktreeCount: checkout.worktreeCount,
+    isolatedNamespace,
+    isolatedRefspec: refspec,
     fetchedAt,
     cached: false,
     stdout: trimOrNull(fetch.stdout),
@@ -999,6 +1056,12 @@ function shaMatches(expected, actual) {
     return null;
   }
   return left.startsWith(right) || right.startsWith(left);
+}
+
+function shaEquals(expected, actual) {
+  const left = trimOrNull(expected)?.toLowerCase() || null;
+  const right = trimOrNull(actual)?.toLowerCase() || null;
+  return Boolean(left && right && left === right);
 }
 
 function normalizeStringArray(value, name) {
@@ -1320,7 +1383,7 @@ async function githubSetupStatus(input = {}) {
   const gitVersion = safeRunGit(["--version"], { cwd });
   const auth = safeRunGh(["auth", "status"], { cwd });
   const gitRoot = safeRunGit(["rev-parse", "--show-toplevel"], { cwd });
-  const branch = safeRunGit(["branch", "--show-current"], { cwd });
+  const checkout = inspectGitCheckout(cwd);
   const origin = safeRunGit(["remote", "get-url", "origin"], { cwd });
   const originRepo = origin.status === 0 ? parseRepoFromGitRemote(origin.stdout) : null;
   const targetRepo = input.repo ? parseRepoName(input.repo) : originRepo;
@@ -1393,7 +1456,8 @@ async function githubSetupStatus(input = {}) {
       kind: "setup_status",
       configured,
       repository: repoResolved ? repo.data.nameWithOwner : null,
-      branch: branch.status === 0 ? branch.stdout.trim() : null,
+      branch: checkout.branch,
+      detached: checkout.detached,
       activeAccount: accounts.find((account) => account.active)?.login || null,
       fetched: freshness.ok,
       warnings: warnings.length
@@ -1406,7 +1470,10 @@ async function githubSetupStatus(input = {}) {
     },
     git: {
       root: gitRoot.status === 0 ? gitRoot.stdout.trim() : null,
-      branch: branch.status === 0 ? branch.stdout.trim() : null,
+      branch: checkout.branch,
+      detached: checkout.detached,
+      head: checkout.head,
+      worktreeCount: checkout.worktreeCount,
       origin: origin.status === 0 ? redactGitRemote(origin.stdout) : null
     },
     repositoryTarget: targetRepo,
@@ -1419,9 +1486,7 @@ async function githubSetupStatus(input = {}) {
 async function githubCurrentContext(input = {}) {
   const cwd = cwdFrom(input);
   const freshness = maybeAutoFetch(input);
-  const gitRoot = safeRunGit(["rev-parse", "--show-toplevel"], { cwd });
-  const branch = safeRunGit(["branch", "--show-current"], { cwd });
-  const head = safeRunGit(["rev-parse", "HEAD"], { cwd });
+  const checkout = inspectGitCheckout(cwd);
   const remote = safeRunGit(["remote", "get-url", "origin"], { cwd });
   const repo = safeRunGh(["repo", "view", "--json", "nameWithOwner,url,defaultBranchRef,viewerPermission,isPrivate,description"], {
     cwd,
@@ -1430,14 +1495,16 @@ async function githubCurrentContext(input = {}) {
   });
   const auth = safeRunGh(["auth", "status"], { cwd });
   const git = {
-    root: gitRoot.status === 0 ? gitRoot.stdout.trim() : null,
-    branch: branch.status === 0 ? branch.stdout.trim() : null,
-    head: head.status === 0 ? head.stdout.trim() : null,
+    root: checkout.root,
+    branch: checkout.branch,
+    detached: checkout.detached,
+    head: checkout.head,
+    worktreeCount: checkout.worktreeCount,
     origin: remote.status === 0 ? redactGitRemote(remote.stdout) : null
   };
   const github = repo.status === 0 ? repo.data : null;
   const warnings = [
-    gitRoot.status === 0 ? null : "cwd is not inside a git repository",
+    checkout.available ? null : "cwd is not inside a git repository",
     repo.status === 0 ? null : "gh could not resolve a repository for cwd",
     ...freshnessWarnings(freshness)
   ].filter(Boolean);
@@ -1450,6 +1517,7 @@ async function githubCurrentContext(input = {}) {
       kind: "current_context",
       repository: github?.nameWithOwner || null,
       branch: git.branch,
+      detached: git.detached,
       head: compactSha(git.head),
       defaultBranch: github?.defaultBranchRef?.name || null,
       viewerPermission: github?.viewerPermission || null,
@@ -1508,6 +1576,115 @@ async function githubPrList(input = {}) {
     pullRequests: result.data,
     warnings: freshnessWarnings(freshness)
   };
+}
+
+const PR_IDENTITY_FIELDS = "number,title,state,isDraft,author,baseRefName,headRefName,headRefOid,updatedAt,url";
+
+function resolveDefaultPullRequestSelector({ cwd, repo, number, toolName }) {
+  if (number != null) {
+    return {
+      selector: String(number),
+      identity: {
+        strategy: "explicit",
+        selector: String(number)
+      },
+      commands: [],
+      warnings: []
+    };
+  }
+
+  const checkout = inspectGitCheckout(cwd);
+  if (!checkout.available) {
+    throw new Error(`${toolName} needs an explicit PR number, URL, or branch because cwd is not inside a git repository.`);
+  }
+  if (checkout.branch) {
+    return {
+      selector: checkout.branch,
+      identity: {
+        strategy: "attached_branch",
+        branch: checkout.branch,
+        localHead: checkout.head
+      },
+      commands: [],
+      warnings: []
+    };
+  }
+  if (!checkout.detached) {
+    throw new Error(`${toolName} needs an explicit PR number, URL, or branch because the current branch could not be resolved.`);
+  }
+  if (!checkout.head) {
+    throw new Error(`${toolName} needs an explicit PR number, URL, or branch because detached HEAD could not be read.`);
+  }
+
+  const args = [
+    "pr",
+    "list",
+    "--json",
+    PR_IDENTITY_FIELDS,
+    "--limit",
+    "100",
+    "--state",
+    "all",
+    "--search",
+    checkout.head
+  ];
+  const result = runGh(addRepo(args, repo), { cwd, json: true });
+  const pullRequests = Array.isArray(result.data) ? result.data : [];
+  const matches = pullRequests.filter((pr) => shaEquals(checkout.head, pr.headRefOid));
+
+  if (matches.length === 0) {
+    throw new Error(`${toolName} is running in a detached checkout at ${compactSha(checkout.head)}, but no PR has that exact head SHA. Pass a PR number, URL, or branch explicitly.`);
+  }
+  if (matches.length > 1) {
+    const rendered = matches
+      .map((pr) => `#${pr.number} ${pr.headRefName || "(no head branch)"} ${compactSha(pr.headRefOid)}`)
+      .join("; ");
+    throw new Error(`${toolName} found multiple PRs for detached HEAD ${compactSha(checkout.head)}: ${rendered}. Pass the PR number explicitly.`);
+  }
+
+  const match = matches[0];
+  return {
+    selector: String(match.number),
+    identity: {
+      strategy: "detached_head_sha",
+      localHead: checkout.head,
+      worktreeCount: checkout.worktreeCount,
+      number: match.number,
+      title: match.title || null,
+      state: match.state || null,
+      baseRefName: match.baseRefName || null,
+      headRefName: match.headRefName || null,
+      headRefOid: match.headRefOid || null,
+      url: match.url || null
+    },
+    commands: [result.command],
+    warnings: [
+      `Detached checkout resolved by exact HEAD SHA ${compactSha(checkout.head)} to PR #${match.number}; no current-branch PR default was used.`
+    ]
+  };
+}
+
+function validateDetachedPrHead({ cwd, repo, prIdentity, toolName, pullRequest = null }) {
+  if (prIdentity?.strategy !== "detached_head_sha") {
+    return { commands: [] };
+  }
+
+  let headRefOid = trimOrNull(pullRequest?.headRefOid);
+  const commands = [];
+  if (!headRefOid) {
+    const result = runGh(
+      addRepo(["pr", "view", String(prIdentity.number), "--json", "headRefOid"], repo),
+      { cwd, json: true }
+    );
+    commands.push(result.command);
+    headRefOid = trimOrNull(result.data?.headRefOid);
+  }
+
+  if (!shaEquals(prIdentity.localHead, headRefOid)) {
+    throw new Error(`${toolName} resolved detached HEAD ${compactSha(prIdentity.localHead)} to PR #${prIdentity.number}, but the PR head is now ${compactSha(headRefOid)}. Refusing to use a stale PR identity; pass an explicit PR number after refreshing context.`);
+  }
+
+  return { commands };
 }
 
 function errorSummary(error) {
@@ -2106,10 +2283,14 @@ async function githubPrRebasePlan(input = {}) {
 async function githubPrView(input = {}) {
   const cwd = cwdFrom(input);
   const freshness = maybeAutoFetch(input);
+  const prIdentity = resolveDefaultPullRequestSelector({
+    cwd,
+    repo: input.repo,
+    number: input.number,
+    toolName: "github_pr_view"
+  });
   const args = ["pr", "view"];
-  if (input.number != null) {
-    args.push(String(input.number));
-  }
+  args.push(prIdentity.selector);
   args.push(
     "--json",
     fields(
@@ -2118,22 +2299,36 @@ async function githubPrView(input = {}) {
     )
   );
   const result = runGh(addRepo(args, input.repo), { cwd, json: true });
+  const validation = validateDetachedPrHead({
+    cwd,
+    repo: input.repo,
+    prIdentity: prIdentity.identity,
+    toolName: "github_pr_view",
+    pullRequest: result.data
+  });
   return {
     command: result.command,
+    resolutionCommands: prIdentity.commands,
+    validationCommands: validation.commands,
     freshness,
+    prIdentity: prIdentity.identity,
     abstract: summarizePr(result.data, freshness),
     pullRequest: result.data,
-    warnings: freshnessWarnings(freshness)
+    warnings: [...freshnessWarnings(freshness), ...prIdentity.warnings]
   };
 }
 
 async function githubPrDiff(input = {}) {
   const cwd = cwdFrom(input);
   const freshness = maybeAutoFetch(input);
+  const prIdentity = resolveDefaultPullRequestSelector({
+    cwd,
+    repo: input.repo,
+    number: input.number,
+    toolName: "github_pr_diff"
+  });
   const args = ["pr", "diff"];
-  if (input.number != null) {
-    args.push(String(input.number));
-  }
+  args.push(prIdentity.selector);
   args.push("--color", "never");
   if (input.patch) {
     args.push("--patch");
@@ -2146,15 +2341,24 @@ async function githubPrDiff(input = {}) {
       args.push("--exclude", String(pattern));
     }
   }
+  const validation = validateDetachedPrHead({
+    cwd,
+    repo: input.repo,
+    prIdentity: prIdentity.identity,
+    toolName: "github_pr_diff"
+  });
   const result = runGh(addRepo(args, input.repo), { cwd });
   const diff = truncate(result.stdout, input.maxBytes || DEFAULT_MAX_BYTES);
   return {
     command: result.command,
+    resolutionCommands: prIdentity.commands,
+    validationCommands: validation.commands,
     freshness,
+    prIdentity: prIdentity.identity,
     abstract: summarizeDiff(diff.text, diff.truncated, freshness),
     diff,
     stderr: result.stderr.trim() || null,
-    warnings: freshnessWarnings(freshness)
+    warnings: [...freshnessWarnings(freshness), ...prIdentity.warnings]
   };
 }
 
@@ -2249,25 +2453,38 @@ query($owner: String!, $name: String!, $number: Int!) {
 async function githubChecks(input = {}) {
   const cwd = cwdFrom(input);
   const freshness = maybeAutoFetch(input);
+  const prIdentity = resolveDefaultPullRequestSelector({
+    cwd,
+    repo: input.repo,
+    number: input.number,
+    toolName: "github_checks"
+  });
   const args = ["pr", "checks"];
-  if (input.number != null) {
-    args.push(String(input.number));
-  }
+  args.push(prIdentity.selector);
   args.push("--json", "bucket,completedAt,description,event,link,name,startedAt,state,workflow");
   if (input.requiredOnly) {
     args.push("--required");
   }
+  const validation = validateDetachedPrHead({
+    cwd,
+    repo: input.repo,
+    prIdentity: prIdentity.identity,
+    toolName: "github_checks"
+  });
   const result = runGh(addRepo(args, input.repo), { cwd, json: true, allowFailure: true });
   if (result.status !== 0 && result.status !== 8) {
     throw new Error(result.stderr.trim() || result.stdout.trim() || "gh pr checks failed");
   }
   return {
     command: result.command,
+    resolutionCommands: prIdentity.commands,
+    validationCommands: validation.commands,
     pending: result.status === 8,
     freshness,
+    prIdentity: prIdentity.identity,
     abstract: summarizeChecks(result.data, result.status === 8, freshness),
     checks: result.data,
-    warnings: freshnessWarnings(freshness)
+    warnings: [...freshnessWarnings(freshness), ...prIdentity.warnings]
   };
 }
 

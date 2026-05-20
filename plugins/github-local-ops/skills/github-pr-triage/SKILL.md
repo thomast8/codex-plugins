@@ -10,8 +10,8 @@ Use this skill when the user asks to inspect, summarize, review, or understand a
 ## Workflow
 
 1. Run `github_setup_status` if auth, repo, or plugin readiness is unclear. Pass the user checkout `cwd` when working from local refs.
-2. Run `github_current_context` if the repo or branch is not explicit; pass `autoFetch: true` only when the review needs fresh local refs.
-3. For a PR number, run `github_pr_view` with base/head fields and review status. For a branch, use `github_pr_list` or `github_pr_view` without a number from that branch.
+2. Run `github_current_context` if the repo or branch is not explicit; pass `autoFetch: true` only when the review needs fresh local refs. If the checkout is detached, rely on the tool's `detached` and `head` fields instead of assuming a current branch.
+3. For a PR number, run `github_pr_view` with base/head fields and review status. For an attached branch, `github_pr_view` without a number resolves that branch. For a detached checkout, `github_pr_view`, `github_pr_diff`, and `github_checks` resolve by exact local `HEAD` SHA and fail if no unique PR matches.
 4. Always use the PR's actual base branch from `baseRefName`; stacked PRs often target their parent branch.
 5. Run `github_pr_diff` for the PR diff. Use `nameOnly` first when the file list is enough.
 6. Run `github_checks` for CI status and `github_pr_review_threads` when comments or inline review context matters.
@@ -26,5 +26,6 @@ Use this skill when the user asks to inspect, summarize, review, or understand a
 ## Scope Rules
 
 - Do not assume `main` is the base.
+- Do not infer a PR number from memory or an earlier chat when `github_current_context.git.detached` is true. Use the provider's detached-head resolution evidence, or pass an explicit PR number or URL.
 - Prefer GitHub Local Ops freshness evidence before local git diff work when performing a PR review or preparing a branch review. If the tool did not fetch or reports a fetch warning, run or request the appropriate `git fetch --all` fallback before relying on local refs.
 - If the GitHub connector is unavailable, use the local MCP tools or direct `gh` commands with the same base/head discipline.
