@@ -1,6 +1,6 @@
 #!/bin/bash
-# Block direct commits and dangerous operations on main branch.
-# Allow: tag pushes, pushing other branches, pulling/fast-forwarding main.
+# Block direct pushes to main.
+# Allow: local commits, pulls, merges, tag pushes, and pushes to other branches.
 set -uo pipefail
 
 INPUT=$(cat)
@@ -323,27 +323,6 @@ handle_git_command() {
   fi
 
   case "$verb" in
-    commit)
-      [ "$is_main" -eq 1 ] && deny "do not commit directly to main" "$repo_dir"
-      ;;
-    merge)
-      if [ "$is_main" -eq 1 ]; then
-        if [ $((j + 1)) -lt "${#TOKENS[@]}" ] && [ "${TOKENS[$((j + 1))]}" = "origin/main" ]; then
-          return 0
-        fi
-        deny "do not merge into main locally" "$repo_dir"
-      fi
-      ;;
-    pull)
-      if [ "$is_main" -eq 1 ]; then
-        if [ $((j + 2)) -lt "${#TOKENS[@]}" ] \
-          && [ "${TOKENS[$((j + 1))]}" = "origin" ] \
-          && [ "${TOKENS[$((j + 2))]}" = "main" ]; then
-          return 0
-        fi
-        deny "do not pull into main except from origin main" "$repo_dir"
-      fi
-      ;;
     push)
       handle_push_tokens "$repo_dir" "$is_main" $((j + 1))
       ;;

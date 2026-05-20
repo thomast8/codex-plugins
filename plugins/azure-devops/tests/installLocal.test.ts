@@ -638,8 +638,6 @@ describe("local installer", () => {
   });
 
   it.each([
-    'git commit -m "x"',
-    'git -c commit.gpgsign=false commit -m "x"',
     "git push",
     "git push origin",
     "git push --force-with-lease origin main",
@@ -649,7 +647,7 @@ describe("local installer", () => {
     "git push origin HEAD:refs/heads/main",
     "git push origin v1.2.3 main",
     "echo CODEX_ALLOW_MAIN=1 && git push origin main",
-  ])("blocks unsafe main branch command: %s", async (command) => {
+  ])("blocks unsafe main push command: %s", async (command) => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-home-"));
     const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-main-"));
     await initMainRepo(repoDir);
@@ -692,27 +690,14 @@ describe("local installer", () => {
     expect(result.stderr).toContain("bare push would publish it");
   });
 
-  it("blocks git -C commits when the target repo path contains spaces", async () => {
-    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-home-"));
-    const mainParentDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow main parent-"));
-    const mainRepoDir = path.join(mainParentDir, "main target repo");
-    const cwdRepoDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-cwd-"));
-    fs.mkdirSync(mainRepoDir);
-    await initMainRepo(mainRepoDir);
-    await initMainRepo(cwdRepoDir);
-    await execFile("git", ["checkout", "-b", "feature/demo"], { cwd: cwdRepoDir });
-
-    const result = runRepoSafety(
-      cwdRepoDir,
-      homeDir,
-      `git -C "${mainRepoDir}" commit -m "x"`
-    );
-
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("do not commit directly to main");
-  });
-
-  it.each(["git push origin feature/demo", "git push origin --tags"])(
+  it.each([
+    'git commit -m "x"',
+    'git -c commit.gpgsign=false commit -m "x"',
+    "git merge --ff-only origin/main",
+    "git pull origin main",
+    "git push origin feature/demo",
+    "git push origin --tags",
+  ])(
     "allows safe explicit main branch command: %s",
     async (command) => {
       const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-home-"));
@@ -727,7 +712,7 @@ describe("local installer", () => {
   );
 
   it.each([
-    'CODEX_ALLOW_MAIN=1 git commit -m "x"',
+    "CODEX_ALLOW_MAIN=1 git push origin main",
     "env CODEX_ALLOW_MAIN=1 git push origin main",
   ])("allows explicit one-command main guard override: %s", async (command) => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "workflow-home-"));
@@ -751,7 +736,7 @@ describe("local installer", () => {
       "utf8"
     );
 
-    const result = runRepoSafety(repoDir, homeDir, 'git commit -m "x"');
+    const result = runRepoSafety(repoDir, homeDir, "git push origin main");
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
