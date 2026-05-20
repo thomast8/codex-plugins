@@ -3,7 +3,7 @@
 Personal Codex marketplace repo for Thomas's plugins. It currently bundles Azure DevOps, GitHub Local Ops, Thomas Codex Workflows, and Thomas Codex Skills.
 
 The marketplace root is `thomast8/codex-plugins`. The repo-level marketplace file at `.agents/plugins/marketplace.json` points Codex at plugin packages under `plugins/`.
-Standalone personal skills live under `skills/`, are mirrored into `plugins/thomas-codex-skills/skills/` for marketplace installation, and are installed as top-level skills by the bootstrap script so their names stay stable across machines.
+Personal skills are installed through the `thomas-codex-skills` plugin and executed from Codex's plugin cache after the marketplace is refreshed.
 
 Requires Node.js 22.13.0 or newer.
 
@@ -63,10 +63,7 @@ Each plugin includes `plugin.descriptor.json`, a public-safe explanatory manifes
 
 ## Personal Skills
 
-The same active skills are available in two forms:
-
-- As plugin-marked skills through `plugins/thomas-codex-skills`, which Codex can install from the marketplace UI.
-- As top-level skills linked by `scripts/install-local.mjs`, which keeps names such as `worktree`, `review-code`, and `reconcile` available without a plugin prefix.
+Active personal skills are packaged in `plugins/thomas-codex-skills`, which Codex installs from the marketplace UI or local marketplace source. The top-level `skills/` tree is retained as the editable source mirror for the plugin package, but standalone top-level skill installation is opt-in only.
 
 Archived skills live under `archived-skills/` for recovery and are not installed by default. `npm run verify:skills` checks that the plugin-marked skill copy stays in sync with `skills/`.
 
@@ -164,20 +161,21 @@ npm run build
 node scripts/install-local.mjs
 ```
 
-The installer links every plugin listed in `.agents/plugins/marketplace.json` into a local `codex-plugins` marketplace root, enables each `<plugin>@codex-plugins` entry, links active top-level skills, upserts safe MCP declarations, and disables matching stale standalone entries from older marketplace names if they exist.
+The installer links every plugin listed in `.agents/plugins/marketplace.json` into a local `codex-plugins` marketplace root, enables each `<plugin>@codex-plugins` entry, upserts safe MCP declarations, and disables matching stale standalone entries from older marketplace names if they exist.
 It updates `~/.Codex/config.toml`, writes a timestamped `0600` backup next to that file before changing it, and defaults the local marketplace source to `~/.Codex/marketplaces/codex-plugins`.
 
 For isolated tests, current-machine installs, or partial installs, override the defaults:
 
 - `CODEX_CONFIG_FILE`: config file to edit, defaults to `~/.Codex/config.toml`.
 - `CODEX_CONFIG_ROOT`: marketplace root to populate, defaults to `~/.Codex/marketplaces/codex-plugins`.
-- `CODEX_SKILLS_ROOT`: skills root to populate, defaults to `~/.Codex/skills`.
+- `CODEX_SKILLS_ROOT`: skills root to populate when standalone skill linking is explicitly enabled, defaults to `~/.Codex/skills`.
 - `CODEX_PLUGINS`: comma-separated plugin names, such as `azure-devops,github-local-ops`.
 - `CODEX_SKILLS`: comma-separated skill names, such as `review-code,worktree`.
 - `CODEX_MCPS`: comma-separated safe MCP declarations, such as `gitnexus,mcp-debugger`.
-- `CODEX_INSTALL_SKILLS=false` or `CODEX_INSTALL_MCPS=false`: skip those install surfaces.
+- `CODEX_INSTALL_SKILLS=true`: opt in to standalone top-level skill linking. The default is plugin-only skills from `thomas-codex-skills`.
+- `CODEX_INSTALL_MCPS=false`: skip safe MCP declaration installation.
 
-If a target skill path already exists and is not a symlink to this repo, the installer stops instead of replacing it. Move or back up the existing directory before rerunning.
+If standalone skill linking is enabled and a target skill path already exists and is not a symlink to this repo, the installer stops instead of replacing it. Move or back up the existing directory before rerunning.
 
 For local and private testing, prefer Azure CLI after a normal Microsoft sign-in:
 

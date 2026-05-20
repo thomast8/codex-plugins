@@ -19,7 +19,6 @@ describe("local installer", () => {
   const skillsPluginSource = path.join(repoRoot, "plugins", "thomas-codex-skills");
   const repoSafetyPath = path.join(workflowsPluginSource, "hooks", "repo-safety.sh");
   const worktreeCreatePath = path.join(workflowsPluginSource, "hooks", "worktree-create.sh");
-  const reviewCodeSkillSource = path.join(repoRoot, "skills", "review-code");
 
   function createConfig(configPath: string): void {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
@@ -197,8 +196,6 @@ describe("local installer", () => {
         "thomas-codex-skills@codex-plugins",
       ].join(", ")
     );
-    expect(stdout).toContain("Skills: ");
-    expect(stdout).toContain("review-code");
     expect(stdout).toContain("MCP servers: gitnexus, mcp-debugger");
     expect(stdout).toContain(
       [
@@ -298,11 +295,7 @@ describe("local installer", () => {
     expect(fs.realpathSync(skillsPluginLink)).toBe(
       fs.realpathSync(skillsPluginSource)
     );
-    const reviewCodeSkillLink = path.join(homeDir, ".Codex", "skills", "review-code");
-    expect(fs.lstatSync(reviewCodeSkillLink).isSymbolicLink()).toBe(true);
-    expect(fs.realpathSync(reviewCodeSkillLink)).toBe(
-      fs.realpathSync(reviewCodeSkillSource)
-    );
+    expect(fs.existsSync(path.join(homeDir, ".Codex", "skills", "review-code"))).toBe(false);
 
     const marketplace = JSON.parse(
       fs.readFileSync(

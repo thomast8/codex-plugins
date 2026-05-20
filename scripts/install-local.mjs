@@ -30,7 +30,7 @@ const selectedPluginNames = (
   .split(",")
   .map((name) => name.trim())
   .filter((name) => name !== "");
-const installSkills = process.env.CODEX_INSTALL_SKILLS !== "false";
+const installSkills = process.env.CODEX_INSTALL_SKILLS === "true";
 const selectedSkillNames = (
   process.env.CODEX_SKILLS ?? process.env.CODEX_SKILL_NAME ?? ""
 )

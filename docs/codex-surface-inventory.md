@@ -20,9 +20,9 @@ Each plugin also carries `plugin.descriptor.json`, a public-safe explanatory man
 - `thomas-codex-workflows`: personal Codex workflow hooks for repo safety, GitNexus upkeep, and worktree lifecycle setup.
 - `thomas-codex-skills`: active personal skills packaged as a single marketplace plugin.
 
-## Standalone Personal Skills
+## Personal Skills
 
-These are installed as top-level skills so their names remain stable across machines. The same skill files are mirrored into `plugins/thomas-codex-skills/skills/` so they can also be installed from the marketplace UI as plugin-marked skills.
+These are installed through the `thomas-codex-skills` plugin and executed from Codex's plugin cache after marketplace refresh. The top-level `skills/` tree is retained as the editable source mirror for the plugin package; standalone top-level skill installation is opt-in only.
 
 - `find-reviewer`
 - `frontend-design`
@@ -72,6 +72,6 @@ Do not publish or vendor:
 2. Run `npm install`.
 3. Run `npm run build`.
 4. Run `node scripts/install-local.mjs`.
-5. Restart or reload Codex.
+5. Refresh or reinstall the `codex-plugins` marketplace through Codex, then restart or reload Codex if needed.
 
-Use the Codex marketplace UI to install `Thomas Codex Skills` when you want plugin-marked skill names. Use `CODEX_CONFIG_FILE`, `CODEX_CONFIG_ROOT`, `CODEX_SKILLS_ROOT`, `CODEX_PLUGINS`, `CODEX_SKILLS`, and `CODEX_MCPS` for dry runs or partial installs.
+Use the Codex marketplace UI to install `Thomas Codex Skills`. Use `CODEX_CONFIG_FILE`, `CODEX_CONFIG_ROOT`, `CODEX_PLUGINS`, `CODEX_MCPS`, and `CODEX_INSTALL_SKILLS=true` for dry runs, partial installs, or explicit standalone skill linking.
