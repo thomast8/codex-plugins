@@ -1,11 +1,11 @@
 ---
 name: github-review-follow-up
-description: Address GitHub PR review comments with original-comment ledgers, proposed replies, explicit approval, GraphQL posting, readback, and reviewer handoff through GitHub Local Ops.
+description: Address GitHub PR review comments with original-comment ledgers, proposed replies, explicit approval, GraphQL posting, readback, reviewer handoff, and sending reviewed PRs back to authors through GitHub Local Ops.
 ---
 
 # GitHub Review Follow-Up
 
-Use this skill when the user asks to address PR review comments, reply to reviewers, send a PR back to reviewers, or handle inline review threads.
+Use this skill when the user asks to address PR review comments, reply to reviewers, send a PR back to reviewers, send a reviewed PR back to the author, or handle inline review threads.
 
 ## Workflow
 
@@ -16,7 +16,7 @@ Use this skill when the user asks to address PR review comments, reply to review
 5. Inspect local code and tests needed to decide whether each comment is valid, already handled, rejected, or needs a fix.
 6. Build a ledger with original comment, code-context reasoning, status, evidence, and exact proposed public reply.
 7. Wait for explicit approval before posting.
-8. When the user says to send a reviewed PR back to the author, submit a `REQUEST_CHANGES` review. Do not confuse this with requesting reviewers, which sends the PR back to reviewers after the author has fixed it. Preview and approval-gate the review body; if the provider lacks a request-changes operation, use `gh pr review <number> --request-changes --body ...` as a fallback and read back `reviewDecision: CHANGES_REQUESTED` with `github_pr_view`.
+8. When the user says to send a reviewed PR back to the author, submit a formal `REQUEST_CHANGES` review. Do not confuse this with requesting reviewers, which sends the PR back to reviewers after the author has fixed it. A PR conversation comment is not enough, even if it contains the same text. Preview and approval-gate the exact review body; if the provider rejects `REQUEST_CHANGES` or only supports `COMMENT` for `pull_request_review`, use `gh pr review <number> --request-changes --body ...` as the provider-gap fallback. Immediately read back with `github_pr_view` and do not say it was sent back unless `reviewDecision` or the latest review state is `CHANGES_REQUESTED`.
 9. Before any reviewer re-request, run `github_pr_handoff_status` with the expected head SHA, approved replies, expected PR body marker when relevant, and expected reviewers.
 10. Use `github_review_handoff_preview` for approved replies, PR body update, and reviewer re-request. Echo the preview and wait for explicit approval.
 11. After approval, call `github_mutation_execute` only if the preview reports `executableByTool: true`. The MCP posts replies, reads them back, updates the PR body, re-checks CI, then requests reviewers.

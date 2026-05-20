@@ -22,6 +22,7 @@ This plugin does not bypass an admin-disabled hosted connector. It uses the user
 | --- | --- |
 | Pull request metadata, base/head scope, diffs, review state | [../github-pr-triage/SKILL.md](../github-pr-triage/SKILL.md) |
 | Review comments, reviewer replies, readback, reviewer handoff | [../github-review-follow-up/SKILL.md](../github-review-follow-up/SKILL.md) |
+| Sending a reviewed PR back to the author with changes requested | [../github-review-follow-up/SKILL.md](../github-review-follow-up/SKILL.md) |
 | Actions checks, failed runs, reruns, logs | [../github-ci-debug/SKILL.md](../github-ci-debug/SKILL.md) |
 | Commit, push, draft PR creation, PR body preparation | [../github-publish-changes/SKILL.md](../github-publish-changes/SKILL.md) |
 | Issues, labels, releases, workflow dispatch | [../github-issues-releases/SKILL.md](../github-issues-releases/SKILL.md) |
@@ -68,6 +69,7 @@ For all public writes:
 - Preview before public writes: PR comments, new inline pull request review comments, review-thread replies, PR edits, reviewer requests, issue comments, label changes, workflow dispatch, workflow reruns, and release creation.
 - For a batch of new inline pull request review comments on one PR, prefer `github_mutation_preview` with operation `pull_request_review`. Payload must include `repo`, `number`, `commitId`, `body`, `event: "COMMENT"`, and `comments` with `path`, `line`, `body`, and optional `side`, `startLine`, and `startSide`. Execution creates one GitHub review, then reads back the review comments and returns exact-match evidence.
 - For a single new inline pull request review comment, use `github_mutation_preview` with operation `pull_request_review_comment` and payload `repo`, `number`, `body`, `commitId`, `path`, `line`, and `side` (`RIGHT` for the head side, `LEFT` for the base side). Use `startLine` and `startSide` only for multi-line comments. After execution, read back with `github_pr_review_threads` and report the discussion URL.
+- When the user asks to send a reviewed PR back to the author, submit a formal `REQUEST_CHANGES` review. Do not substitute a top-level PR comment. The `pull_request_review` mutation preview path is for batched inline `COMMENT` reviews; if it rejects `REQUEST_CHANGES`, use `gh pr review <number> --request-changes --body ...` as the provider-gap fallback, then read back `reviewDecision: CHANGES_REQUESTED` or latest review state `CHANGES_REQUESTED` with `github_pr_view` before claiming it was sent back.
 - Keep public GitHub comments and replies short, casual, and specific.
 - Do not post rubric tables, reproduction matrices, approval ledgers, or internal review-output formats to GitHub. Translate review evidence into human reviewer prose before posting: the problem, the concrete impact or example, and the requested fix.
 - Never resolve reviewer-authored review threads; leave resolution to reviewers or maintainers.
