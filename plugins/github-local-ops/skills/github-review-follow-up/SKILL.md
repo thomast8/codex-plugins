@@ -16,10 +16,11 @@ Use this skill when the user asks to address PR review comments, reply to review
 5. Inspect local code and tests needed to decide whether each comment is valid, already handled, rejected, or needs a fix.
 6. Build a ledger with original comment, code-context reasoning, status, evidence, and exact proposed public reply.
 7. Wait for explicit approval before posting.
-8. Before any reviewer re-request, run `github_pr_handoff_status` with the expected head SHA, approved replies, expected PR body marker when relevant, and expected reviewers.
-9. Use `github_review_handoff_preview` for approved replies, PR body update, and reviewer re-request. Echo the preview and wait for explicit approval.
-10. After approval, call `github_mutation_execute` only if the preview reports `executableByTool: true`. The MCP posts replies, reads them back, updates the PR body, re-checks CI, then requests reviewers.
-11. Run `github_pr_handoff_status` again before saying handoff is done.
+8. When the user says to send a reviewed PR back to the author, submit a `REQUEST_CHANGES` review. Do not confuse this with requesting reviewers, which sends the PR back to reviewers after the author has fixed it. Preview and approval-gate the review body; if the provider lacks a request-changes operation, use `gh pr review <number> --request-changes --body ...` as a fallback and read back `reviewDecision: CHANGES_REQUESTED` with `github_pr_view`.
+9. Before any reviewer re-request, run `github_pr_handoff_status` with the expected head SHA, approved replies, expected PR body marker when relevant, and expected reviewers.
+10. Use `github_review_handoff_preview` for approved replies, PR body update, and reviewer re-request. Echo the preview and wait for explicit approval.
+11. After approval, call `github_mutation_execute` only if the preview reports `executableByTool: true`. The MCP posts replies, reads them back, updates the PR body, re-checks CI, then requests reviewers.
+12. Run `github_pr_handoff_status` again before saying handoff is done.
 
 ## Ledger Shape
 
@@ -37,6 +38,7 @@ Report these as separate facts, not one blended "done":
 - Approved thread replies posted: every approved `{commentId, body}` has a matching reply.
 - Readback confirmed: posted reply bodies and URLs were read back from GitHub.
 - Reviewers re-requested: expected reviewers are currently requested.
+- Sent back to author: latest review state is `CHANGES_REQUESTED`, when the user asked to send it back for fixes.
 - Checks: passing, failing, or pending.
 
 If the PR head has the expected commit but approved replies are still unposted or unread, call out the `pushedIsNotReplied` guard and do not claim handoff is complete.

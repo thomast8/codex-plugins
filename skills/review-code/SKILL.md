@@ -121,6 +121,50 @@ why it matters, and the closest evidence they used instead. Their final lane
 reports should use the same reviewer-shaped evidence fields for any confirmed
 finding.
 
+## Delegated Evidence Contract
+
+The coordinator owns setup, freshness, provider reads, broad test runs, and
+expensive smoke checks before spawning review lanes. Treat explicit
+parent-supplied verification, such as commands listed under "Verified commands
+already run by parent" or "Known Verification Evidence", as authoritative
+review evidence. Sub-agents should cite that evidence in their Verification
+section instead of rerunning it.
+
+Reproduction means proving a concrete candidate finding. It does not mean
+re-running the whole review scope, repeating parent-verified checks, or proving
+the absence of findings with extra broad tests. A sub-agent may rerun a
+parent-verified command only when it has a specific candidate finding that
+cannot be checked by file reads, deterministic trace, or existing evidence.
+
+Sub-agents must not request sandbox escalation or approval prompts. If a command
+would need approval, hits sandbox or tooling failure, or requires external
+state, record the exact blocked command, why it matters, and the closest
+sandbox-safe evidence instead. Do not start workaround loops such as cache
+relocation, fake shims, alternate runners, or reconfigured tool caches unless
+that workaround is the smallest safe way to reproduce a specific candidate
+finding.
+
+## Final Review Output
+
+When the user asks for a PR or code review, present confirmed findings first as
+a Markdown table. Use this table shape unless the user explicitly requests a
+different format:
+
+| Severity | Finding | File | Claim | Repro Setup | Expected | Observed | Failure Signal | Fix |
+|---|---|---|---|---|---|---|---|---|
+| P1/P2/P3 | Short issue title | `path:line` link | What behavior is wrong and why it matters | Safe setup and exact command, API call, app flow, or trace | Correct behavior | Actual behavior | Output, state transition, assertion, or readback proving the issue | Concrete recommended change |
+
+Keep each cell concise but complete enough for a reviewer to understand the
+issue without reading hidden notes. If a command or trace is too long for the
+table, summarize it in the cell and put the exact command immediately below the
+table under `Reproduction Details`.
+
+After the findings table, include a short `Verification` line or paragraph with
+the exact checks run or parent-supplied checks relied on, plus their results. If
+there are no confirmed findings, say "No confirmed findings" first, then include
+residual risks and verification. Put unreproduced concerns in a separate
+`Unverified Risks` section only when they are useful and clearly blocked.
+
 ## Public Review Comments
 
 The reproduction rubric is for Codex chat/final review output only. Do not paste
@@ -177,9 +221,11 @@ Do not set `fork_context` with these semantic roles. Full-history forked agents
 inherit the parent agent type, model, and reasoning effort, so current Codex
 runtimes reject the combination of `fork_context: true` plus `agent_type`. The
 review lanes should receive an explicit, self-contained scope instead: absolute
-repo path, base/head or dirty-tree scope, key files, task intent, and any
-important prior findings. These roles use stable display nicknames so the
-activity log shows what each agent is actually doing. Omit `model` and
+repo path, base/head or dirty-tree scope, key files, task intent, important
+prior findings, explicit user constraints, and a `Known Verification Evidence`
+section listing parent-run commands, their results, and any commands the lane
+should not rerun. These roles use stable display nicknames so the activity log
+shows what each agent is actually doing. Omit `model` and
 `reasoning_effort` so agents inherit the current model settings. If
 `multi_tool_use.parallel` is available, use it to issue the selected
 `functions.spawn_agent` calls together. Otherwise, call `spawn_agent` for each
@@ -204,7 +250,7 @@ current assistant and report that the review used the sequential fallback.
 ```
 spawn_agent(
   agent_type: "review-correctness",
-  message: "Review <self-contained intent + repo path + diff scope>. Lens: correctness only - logic errors, off-by-ones, edge cases, null/empty handling, race conditions, error-path bugs, incorrect async/await, state-machine holes. Do not run git fetch, git pull, gt sync, or any network git operation. Reproduce each candidate finding before listing it as an issue, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+  message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: correctness only - logic errors, off-by-ones, edge cases, null/empty handling, race conditions, error-path bugs, incorrect async/await, state-machine holes. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate findings before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
 )
 ```
 
@@ -212,7 +258,7 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-design",
-  message: "Review <self-contained intent + repo path + diff scope>. Lens: design only - API shape, naming, abstraction boundaries, coupling, dead or speculative code, premature abstractions, duplication, maintainability. Do not run git fetch, git pull, gt sync, or any network git operation. Reproduce each candidate finding before listing it as an issue, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+  message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: design only - API shape, naming, abstraction boundaries, coupling, dead or speculative code, premature abstractions, duplication, maintainability. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate findings before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
 )
 ```
 
@@ -220,7 +266,7 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-security",
-  message: "Review <self-contained intent + repo path + diff scope>. Lens: security only - authn/authz, input validation, injection (SQL, command, path, template), SSRF, secrets in code/logs, unsafe deserialization, crypto misuse, dependency risk. Do not run git fetch, git pull, gt sync, or any network git operation. Reproduce each candidate finding before listing it as an issue, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+  message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: security only - authn/authz, input validation, injection (SQL, command, path, template), SSRF, secrets in code/logs, unsafe deserialization, crypto misuse, dependency risk. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate findings before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
 )
 ```
 
@@ -228,7 +274,7 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-tests",
-  message: "Review <self-contained intent + repo path + diff scope>. Lens: tests only - do tests actually exercise the changed behavior? mocks hiding real integration? missing edge cases? flaky timing? assertions that would pass on a broken implementation? Do not run git fetch, git pull, gt sync, or any network git operation. Reproduce each candidate test gap before listing it as an issue, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+  message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: tests only - do tests actually exercise the changed behavior? mocks hiding real integration? missing edge cases? flaky timing? assertions that would pass on a broken implementation? Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate test gaps before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
 )
 ```
 
