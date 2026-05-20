@@ -11,9 +11,9 @@ This plugin does not bypass an admin-disabled hosted connector. It uses the user
 
 ## Setup
 
-- `github_setup_status`: check whether local `git`, `gh`, authentication, and repository resolution are ready.
+- `github_setup_status`: check whether local `git`, `gh`, authentication, repository resolution, and repo-aware account selection are ready.
 - Call `github_setup_status` first when setup, account, repository, or plugin readiness is unclear. Pass the user checkout `cwd` for repo-local work, or pass `repo` when operating only on a named GitHub repository.
-- Prefer the existing GitHub CLI login and macOS keychain state. If auth is missing, guide the user through `gh auth status`, `gh auth login`, or `gh auth switch`; never ask the user to paste tokens into chat or commit credentials to repo files.
+- Prefer the existing GitHub CLI login and macOS keychain state. For repo-scoped operations, let the provider select an authenticated account with command-scoped `GH_TOKEN` from `gh auth token --user`; do not switch the global gh active account. If auth is missing, guide the user through `gh auth status` and `gh auth login`; never ask the user to paste tokens into chat or commit credentials to repo files.
 - Do not create or edit `.env` files for GitHub auth. Use the existing `gh` account state, repo permissions, and command-scoped environment only when a user deliberately provides it outside chat.
 
 ## Routing
@@ -48,7 +48,7 @@ This plugin does not bypass an admin-disabled hosted connector. It uses the user
    - `github_release_list`
    - `github_search`
 3. For public writes, call `github_mutation_preview` and show the exact public action. `github_mutation_execute` applies the approved preview when the MCP process was started by the bundled plugin manifest, with `--enable-public-writes`, or by a custom launcher with `GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES=true`; only execute after explicit user approval.
-4. If a GitHub API command fails because authentication is on the wrong account, inspect `gh auth status` and switch accounts only when the user asks or local repo policy requires it.
+4. If a GitHub API command fails because authentication is on the wrong account, inspect `github_setup_status` and pass `githubAccount` for that operation only when automatic repo-aware selection is ambiguous.
 
 ## Safe Workflow
 
@@ -74,7 +74,7 @@ For all public writes:
 
 ## Tool Notes
 
-- `github_setup_status`: readiness, auth, and repo-resolution check.
+- `github_setup_status`: readiness, auth, repo-resolution, and selected command-scoped account check.
 - `github_current_context`: current checkout, branch, remote, auth text, and resolved repo.
 - `github_repo_view`, `github_pr_list`, `github_pr_view`, `github_issue_list`, `github_issue_view`, `github_release_list`, `github_search`: read metadata through `gh`; use `abstract` for the quick state and full payloads for evidence.
 - `github_my_pull_requests`: discover open authored PRs across accessible private and public repositories with GraphQL `viewer.pullRequests` by default. Pass `author` for explicit author discovery through GraphQL `user.pullRequests`; use this instead of `github_search` for private-org authored PR completeness.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Auto-switch gh CLI account based on the GitHub repo targeted by gh or git push.
+# Legacy GitHub account detector. This must not mutate the global gh active account.
 set -u
 
 INPUT=$(cat)
@@ -291,7 +291,7 @@ fi
 
 if ! valid_owner "$owner"; then
     if [ "$has_gh" -eq 1 ]; then
-        echo "gh: could not resolve GitHub owner for account switch" >&2
+        echo "gh: could not resolve GitHub owner for account check" >&2
         exit 2
     fi
     exit 0
@@ -308,10 +308,5 @@ if [ "$current" = "$target" ]; then
     exit 0
 fi
 
-if gh auth switch --user "$target" >/dev/null 2>&1; then
-    echo "gh: switched to $target (repo owner: $owner)"
-    exit 0
-fi
-
-echo "gh: failed to switch to $target for repo owner $owner" >&2
-exit 2
+echo "gh: $target appears to be the repo account for $owner; leaving the global gh active account unchanged" >&2
+exit 0

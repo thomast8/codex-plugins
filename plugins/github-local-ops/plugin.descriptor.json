@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "github-local-ops",
   "displayName": "GitHub Local Ops",
-  "summary": "Use local GitHub CLI authentication and git state for repository, PR, CI, issue, release, and publishing workflows.",
+  "summary": "Use local GitHub CLI authentication, repo-aware account selection, and git state for repository, PR, CI, issue, release, and publishing workflows.",
   "purpose": "Use this plugin when Codex needs GitHub evidence or GitHub write previews from the local machine, especially when the hosted connector is unavailable or when local git state matters.",
   "whenToUse": [
     "Inspect repositories, pull requests, review threads, checks, workflow runs, issues, releases, or search results.",
@@ -26,7 +26,7 @@
   },
   "safety": {
     "publicSafe": true,
-    "authModel": "Uses existing gh CLI authentication and local git configuration.",
+    "authModel": "Uses existing gh CLI authentication and local git configuration. Repo-scoped operations choose an authenticated account per command with GH_TOKEN from gh auth token --user instead of changing the global active gh account.",
     "writeModel": "The bundled MCP manifest enables preview-owned execution; mutation previews produce approval tokens and exact commands before execution.",
     "excludedState": [
       "GitHub tokens",

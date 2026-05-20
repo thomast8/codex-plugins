@@ -14,7 +14,6 @@ run_hook() {
   fi
 }
 
-run_hook gh-auth-switch.sh
 run_hook main-branch-guard.sh
 run_hook pr-create-nag.sh
 

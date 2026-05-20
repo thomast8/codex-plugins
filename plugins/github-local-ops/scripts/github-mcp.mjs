@@ -9,11 +9,15 @@ const GH_BIN = process.env.GITHUB_LOCAL_OPS_GH_BIN || "gh";
 const GIT_BIN = process.env.GITHUB_LOCAL_OPS_GIT_BIN || "git";
 const TOKEN_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_APPROVAL_TTL_MS || 10 * 60 * 1000);
 const FETCH_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_FETCH_TTL_MS || 5 * 60 * 1000);
+const AUTH_CACHE_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_AUTH_CACHE_TTL_MS || 5 * 60 * 1000);
 const PUBLIC_WRITES_ENABLED = publicWritesEnabled();
 const DEFAULT_LIMIT = 30;
 const DEFAULT_MAX_BYTES = 200000;
+const GITHUB_TOKEN_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"];
 const approvals = new Map();
 const fetchCache = new Map();
+const ghAccountTokenCache = new Map();
+const ghRepoAuthCache = new Map();
 
 function publicWritesEnabled(env = process.env, argv = process.argv) {
   return /^(1|true|yes)$/i.test(env.GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES || "")
@@ -28,6 +32,10 @@ const repoSchema = {
   cwd: {
     type: "string",
     description: "Working directory to run gh or git from. Defaults to the MCP server cwd."
+  },
+  githubAccount: {
+    type: "string",
+    description: "Optional GitHub login to use for this operation without switching the global gh active account. Defaults to repo-aware account selection."
   }
 };
 
@@ -79,6 +87,7 @@ const TOOLS = [
     description: "Inspect the current git checkout, branch, remote, gh auth status, and resolved GitHub repo.",
     inputSchema: objectSchema({
       cwd: repoSchema.cwd,
+      githubAccount: repoSchema.githubAccount,
       ...autoFetchSchema
     })
   },
@@ -118,6 +127,7 @@ const TOOLS = [
     description: "Discover open pull requests authored by the active gh account, or by an explicit author login, across accessible GitHub repositories using GraphQL.",
     inputSchema: objectSchema({
       cwd: repoSchema.cwd,
+      githubAccount: repoSchema.githubAccount,
       ...limitSchema,
       repo: {
         type: "string",
@@ -147,6 +157,7 @@ const TOOLS = [
     description: "Build a parent-first rebase order for authored or supplied pull requests, including stacked PR dependencies and optional base staleness checks.",
     inputSchema: objectSchema({
       cwd: repoSchema.cwd,
+      githubAccount: repoSchema.githubAccount,
       ...limitSchema,
       repo: {
         type: "string",
@@ -405,6 +416,7 @@ const TOOLS = [
       },
       ...limitSchema,
       repo: repoSchema.repo,
+      githubAccount: repoSchema.githubAccount,
       owner: {
         type: "string",
         description: "Optional owner filter for code or repo search."
@@ -416,6 +428,7 @@ const TOOLS = [
     description: "Preview a public GitHub write. Does not mutate GitHub state.",
     inputSchema: objectSchema({
       cwd: repoSchema.cwd,
+      githubAccount: repoSchema.githubAccount,
       operation: {
         type: "string",
         enum: [
@@ -468,11 +481,15 @@ function truncate(value, maxBytes = DEFAULT_MAX_BYTES) {
 
 function run(bin, args, options = {}) {
   const cwd = options.cwd || process.cwd();
+  const env = { ...process.env, ...(options.env || {}) };
+  for (const key of options.removeEnv || []) {
+    delete env[key];
+  }
   const result = spawnSync(bin, args.map(String), {
     cwd,
     encoding: "utf8",
     maxBuffer: options.maxBuffer || 20 * 1024 * 1024,
-    env: process.env
+    env
   });
   const command = [bin, ...args.map(String)];
   if (result.error) {
@@ -501,13 +518,25 @@ function run(bin, args, options = {}) {
 }
 
 function runGh(args, options = {}) {
-  const result = run(GH_BIN, args, options);
+  const auth = options.disableAuthResolution ? null : ghAuthForCommand(args, options);
+  if (options.requireScopedAuth && (!auth?.env || auth.summary?.strategy === "active_account_fallback")) {
+    const repo = options.repoName || repoFromGhArgs(args) || null;
+    throw new Error(`Refusing to execute GitHub write${repo ? ` for ${repo}` : ""} without verified command-scoped GitHub auth. Pass githubAccount or fix gh authentication for the target repo.`);
+  }
+  const result = run(GH_BIN, args, {
+    ...options,
+    env: auth?.env ? { ...(options.env || {}), ...auth.env } : options.env
+  });
   if (!options.json) {
-    return result;
+    return {
+      ...result,
+      auth: auth?.summary || null
+    };
   }
   const text = result.stdout.trim();
   return {
     ...result,
+    auth: auth?.summary || null,
     data: text ? JSON.parse(text) : null
   };
 }
@@ -650,7 +679,7 @@ function resolveRepo(input = {}) {
     return parseRepoName(input.repo);
   }
   const cwd = cwdFrom(input);
-  const result = runGh(["repo", "view", "--json", "nameWithOwner"], { cwd, json: true });
+  const result = runGh(["repo", "view", "--json", "nameWithOwner"], { cwd, json: true, githubAccount: input.githubAccount });
   return parseRepoName(result.data.nameWithOwner);
 }
 
@@ -1358,7 +1387,7 @@ function parseGhAccounts(statusText) {
   return accounts;
 }
 
-function accountSwitchHint(targetRepo, accounts) {
+function accountAuthHint(targetRepo, accounts) {
   if (!targetRepo || accounts.length < 2) {
     return null;
   }
@@ -1367,13 +1396,328 @@ function accountSwitchHint(targetRepo, accounts) {
   if (owner.includes("kyndryl")) {
     const kyndryl = accounts.find((account) => account.login.toLowerCase().includes("kyndryl"));
     if (kyndryl && !kyndryl.active) {
-      return `Active gh account is ${active?.login || "unknown"}; run gh auth switch --user ${kyndryl.login} for ${targetRepo.nameWithOwner}.`;
+      return `Active gh account is ${active?.login || "unknown"}; GitHub Local Ops will use ${kyndryl.login} for ${targetRepo.nameWithOwner} when repo-aware token selection can verify access.`;
     }
   }
   if (active) {
-    return `Active gh account is ${active.login}; run gh auth switch --user <account> if another authenticated account has access to ${targetRepo.nameWithOwner}.`;
+    return `Active gh account is ${active.login}; pass githubAccount only when automatic repo-aware token selection cannot choose the intended account for ${targetRepo.nameWithOwner}.`;
   }
-  return `Run gh auth switch --user <account> if another authenticated account has access to ${targetRepo.nameWithOwner}.`;
+  return `Pass githubAccount only when automatic repo-aware token selection cannot choose the intended account for ${targetRepo.nameWithOwner}.`;
+}
+
+function maybeRepoNameWithOwner(value) {
+  try {
+    return value ? parseRepoName(value).nameWithOwner : null;
+  } catch {
+    return null;
+  }
+}
+
+function fieldValue(args, name) {
+  const flags = new Set(["-f", "--raw-field", "-F", "--field"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index]);
+    let value = null;
+    if (flags.has(arg) && index + 1 < args.length) {
+      value = String(args[index + 1]);
+      index += 1;
+    } else if (arg.startsWith("--raw-field=")) {
+      value = arg.slice("--raw-field=".length);
+    } else if (arg.startsWith("--field=")) {
+      value = arg.slice("--field=".length);
+    }
+    if (value?.startsWith(`${name}=`)) {
+      return value.slice(name.length + 1);
+    }
+  }
+  return null;
+}
+
+function repoFromGhArgs(args) {
+  const repoFlag = args.findIndex((arg) => arg === "--repo" || arg === "-R");
+  if (repoFlag !== -1 && args[repoFlag + 1]) {
+    return maybeRepoNameWithOwner(args[repoFlag + 1]);
+  }
+  const repoEquals = args.find((arg) => String(arg).startsWith("--repo="));
+  if (repoEquals) {
+    return maybeRepoNameWithOwner(String(repoEquals).slice("--repo=".length));
+  }
+  if (args[0] === "repo" && args[1] === "view") {
+    const flagsWithValues = new Set(["--json", "-q", "--jq", "-t", "--template"]);
+    for (let index = 2; index < args.length; index += 1) {
+      const candidate = String(args[index]);
+      if (flagsWithValues.has(candidate)) {
+        index += 1;
+        continue;
+      }
+      if (!candidate.startsWith("-")) {
+        return maybeRepoNameWithOwner(candidate);
+      }
+    }
+  }
+  if (args[0] === "api") {
+    const endpoint = args.find((arg) => /^\/?repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/|$)/.test(String(arg)));
+    if (endpoint) {
+      const [, owner, name] = String(endpoint).match(/^\/?repos\/([^/]+)\/([^/]+)/) || [];
+      if (owner && name) {
+        return maybeRepoNameWithOwner(`${owner}/${name}`);
+      }
+    }
+    const owner = fieldValue(args, "owner");
+    const name = fieldValue(args, "name");
+    if (owner && name) {
+      return maybeRepoNameWithOwner(`${owner}/${name}`);
+    }
+  }
+  return null;
+}
+
+function repoFromCwd(cwd) {
+  const origin = safeRunGit(["remote", "get-url", "origin"], { cwd });
+  if (origin.status !== 0) {
+    return null;
+  }
+  return parseRepoFromGitRemote(origin.stdout)?.nameWithOwner || null;
+}
+
+function commandDefaultsToCwdRepo(args) {
+  if (args[0] === "repo" && args[1] === "view") {
+    return true;
+  }
+  return ["pr", "issue", "release", "run", "workflow"].includes(args[0]);
+}
+
+function permissionRank(permission) {
+  return {
+    ADMIN: 5,
+    MAINTAIN: 4,
+    WRITE: 3,
+    TRIAGE: 2,
+    READ: 1
+  }[String(permission || "").toUpperCase()] || 0;
+}
+
+function getAuthCache(map, key) {
+  if (!map.has(key)) {
+    return undefined;
+  }
+  const entry = map.get(key);
+  if (entry.expiresAt <= Date.now()) {
+    map.delete(key);
+    return undefined;
+  }
+  return entry.value;
+}
+
+function setAuthCache(map, key, value) {
+  map.set(key, {
+    value,
+    expiresAt: Date.now() + AUTH_CACHE_TTL_MS
+  });
+  return value;
+}
+
+function ghAuthStatus(cwd) {
+  const auth = safeRunGh(["auth", "status"], {
+    cwd,
+    disableAuthResolution: true,
+    removeEnv: GITHUB_TOKEN_ENV_KEYS
+  });
+  const text = outputText(auth) || "";
+  const accounts = parseGhAccounts(text);
+  return {
+    command: auth.command,
+    ok: auth.status === 0,
+    activeAccount: accounts.find((account) => account.active)?.login || null,
+    accounts,
+    status: text || null
+  };
+}
+
+function ghTokenForAccount(cwd, account) {
+  const login = requireOptionalLogin(account, "githubAccount");
+  if (!login) {
+    return null;
+  }
+  const key = `${cwd}\0${login}`;
+  const cached = getAuthCache(ghAccountTokenCache, key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const result = safeRunGh(
+    ["auth", "token", "--hostname", "github.com", "--user", login],
+    {
+      cwd,
+      disableAuthResolution: true,
+      removeEnv: GITHUB_TOKEN_ENV_KEYS
+    }
+  );
+  if (result.status !== 0) {
+    const failure = {
+      account: login,
+      ok: false,
+      error: result.stderr?.trim() || result.stdout?.trim() || "gh auth token failed"
+    };
+    return setAuthCache(ghAccountTokenCache, key, failure);
+  }
+  const token = trimOrNull(result.stdout);
+  const value = {
+    account: login,
+    ok: Boolean(token),
+    token,
+    error: token ? null : "gh auth token returned an empty token"
+  };
+  return setAuthCache(ghAccountTokenCache, key, value);
+}
+
+function ghEnvForToken(token) {
+  return token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : null;
+}
+
+function probeRepoAccount(cwd, repo, account) {
+  const token = ghTokenForAccount(cwd, account);
+  if (!token?.ok) {
+    return {
+      account,
+      ok: false,
+      error: token?.error || "token unavailable",
+      viewerPermission: null,
+      rank: 0
+    };
+  }
+  const result = safeRunGh(
+    ["repo", "view", repo, "--json", "nameWithOwner,viewerPermission"],
+    {
+      cwd,
+      json: true,
+      env: ghEnvForToken(token.token),
+      disableAuthResolution: true,
+      removeEnv: ["GITHUB_TOKEN"]
+    }
+  );
+  if (result.status !== 0 || !result.data) {
+    return {
+      account,
+      ok: false,
+      error: result.stderr?.trim() || result.stdout?.trim() || "repo view failed",
+      viewerPermission: null,
+      rank: 0
+    };
+  }
+  return {
+    account,
+    ok: true,
+    error: null,
+    viewerPermission: result.data.viewerPermission || null,
+    rank: permissionRank(result.data.viewerPermission)
+  };
+}
+
+function ghAuthForCommand(args, options = {}) {
+  if (args[0] === "auth") {
+    return null;
+  }
+  const cwd = options.cwd || process.cwd();
+  const repo = options.repoName
+    || repoFromGhArgs(args)
+    || (commandDefaultsToCwdRepo(args) ? repoFromCwd(cwd) : null);
+  const explicitAccount = requireOptionalLogin(options.githubAccount, "githubAccount");
+  const cacheKey = `${cwd}\0${repo || ""}\0${explicitAccount || ""}`;
+  const cached = getAuthCache(ghRepoAuthCache, cacheKey);
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  if (explicitAccount) {
+    const token = ghTokenForAccount(cwd, explicitAccount);
+    if (!token?.ok) {
+      throw new Error(`GitHub account ${explicitAccount} is not available through gh auth token: ${token?.error || "unknown error"}`);
+    }
+    const auth = {
+      env: ghEnvForToken(token.token),
+      summary: {
+        strategy: "explicit_account",
+        account: explicitAccount,
+        repo,
+        viewerPermission: null
+      }
+    };
+    return setAuthCache(ghRepoAuthCache, cacheKey, auth);
+  }
+
+  if (!repo) {
+    return setAuthCache(ghRepoAuthCache, cacheKey, null);
+  }
+
+  const status = ghAuthStatus(cwd);
+  if (!status.ok || status.accounts.length === 0) {
+    return setAuthCache(ghRepoAuthCache, cacheKey, null);
+  }
+
+  const owner = parseRepoName(repo).owner.toLowerCase();
+  const ownerAccount = status.accounts.find((account) => account.login.toLowerCase() === owner);
+  if (ownerAccount) {
+    const token = ghTokenForAccount(cwd, ownerAccount.login);
+    if (token?.ok) {
+      const auth = {
+        env: ghEnvForToken(token.token),
+        summary: {
+          strategy: "owner_login_match",
+          account: ownerAccount.login,
+          repo,
+          viewerPermission: null
+        }
+      };
+      return setAuthCache(ghRepoAuthCache, cacheKey, auth);
+    }
+  }
+
+  const probes = status.accounts.map((account) => probeRepoAccount(cwd, repo, account.login));
+  const successful = probes.filter((probe) => probe.ok);
+  if (successful.length === 0) {
+    const auth = {
+      env: null,
+      summary: {
+        strategy: "active_account_fallback",
+        account: status.activeAccount,
+        repo,
+        viewerPermission: null,
+        warnings: ["No authenticated gh account could be verified against the target repo; falling back to gh default account."]
+      }
+    };
+    return setAuthCache(ghRepoAuthCache, cacheKey, auth);
+  }
+
+  successful.sort((left, right) => {
+    if (right.rank !== left.rank) {
+      return right.rank - left.rank;
+    }
+    return left.account.localeCompare(right.account);
+  });
+  const topRank = successful[0].rank;
+  const topCandidates = successful.filter((probe) => probe.rank === topRank);
+  if (topCandidates.length > 1) {
+    const candidates = topCandidates
+      .map((probe) => `${probe.account} (${probe.viewerPermission || "unknown"})`)
+      .join(", ");
+    throw new Error(`GitHub account selection for ${repo} is ambiguous: ${candidates}. Pass githubAccount to choose the account for this operation.`);
+  }
+  const selected = successful[0];
+  const token = ghTokenForAccount(cwd, selected.account);
+  const auth = {
+    env: token?.ok ? ghEnvForToken(token.token) : null,
+    summary: {
+      strategy: "repo_permission_probe",
+      account: selected.account,
+      repo,
+      viewerPermission: selected.viewerPermission,
+      candidates: successful.map((probe) => ({
+        account: probe.account,
+        viewerPermission: probe.viewerPermission
+      }))
+    }
+  };
+  return setAuthCache(ghRepoAuthCache, cacheKey, auth);
 }
 
 async function githubSetupStatus(input = {}) {
@@ -1381,7 +1725,11 @@ async function githubSetupStatus(input = {}) {
   const freshness = maybeAutoFetch(input);
   const ghVersion = safeRunGh(["--version"], { cwd });
   const gitVersion = safeRunGit(["--version"], { cwd });
-  const auth = safeRunGh(["auth", "status"], { cwd });
+  const auth = safeRunGh(["auth", "status"], {
+    cwd,
+    disableAuthResolution: true,
+    removeEnv: GITHUB_TOKEN_ENV_KEYS
+  });
   const gitRoot = safeRunGit(["rev-parse", "--show-toplevel"], { cwd });
   const checkout = inspectGitCheckout(cwd);
   const origin = safeRunGit(["remote", "get-url", "origin"], { cwd });
@@ -1390,10 +1738,10 @@ async function githubSetupStatus(input = {}) {
   const repoArgs = targetRepo
     ? ["repo", "view", targetRepo.nameWithOwner, "--json", "nameWithOwner,url,defaultBranchRef,viewerPermission,isPrivate,description"]
     : ["repo", "view", "--json", "nameWithOwner,url,defaultBranchRef,viewerPermission,isPrivate,description"];
-  const repo = safeRunGh(repoArgs, { cwd, json: true });
+  const repo = safeRunGh(repoArgs, { cwd, json: true, githubAccount: input.githubAccount });
   const authText = outputText(auth) || "";
   const accounts = parseGhAccounts(authText);
-  const switchHint = accountSwitchHint(targetRepo, accounts);
+  const authHint = accountAuthHint(targetRepo, accounts);
 
   const ghAvailable = ghVersion.status === 0;
   const gitAvailable = gitVersion.status === 0;
@@ -1417,11 +1765,11 @@ async function githubSetupStatus(input = {}) {
     nextSteps.push("Install git or set GITHUB_LOCAL_OPS_GIT_BIN to the git binary path.");
   }
   if (!authOk) {
-    nextSteps.push("Run gh auth status, then gh auth login or gh auth switch outside repo files if the active account is wrong.");
+    nextSteps.push("Run gh auth status, then gh auth login if no account is available. Do not switch the global gh active account for repo-specific work; pass githubAccount only when automatic selection is ambiguous.");
   }
   if (!repoResolved) {
     if (targetRepo) {
-      nextSteps.push(switchHint || `Verify the active gh account can access ${targetRepo.nameWithOwner}.`);
+      nextSteps.push(authHint || `Verify an authenticated gh account can access ${targetRepo.nameWithOwner}.`);
     } else {
       nextSteps.push("Pass repo as OWNER/REPO or run from a checkout with a GitHub origin.");
     }
@@ -1459,6 +1807,7 @@ async function githubSetupStatus(input = {}) {
       branch: checkout.branch,
       detached: checkout.detached,
       activeAccount: accounts.find((account) => account.active)?.login || null,
+      selectedAccount: repo.auth?.account || null,
       fetched: freshness.ok,
       warnings: warnings.length
     },
@@ -1478,6 +1827,7 @@ async function githubSetupStatus(input = {}) {
     },
     repositoryTarget: targetRepo,
     repository: repoResolved ? repo.data : null,
+    authSelection: repo.auth || null,
     warnings,
     nextSteps
   };
@@ -1491,9 +1841,14 @@ async function githubCurrentContext(input = {}) {
   const repo = safeRunGh(["repo", "view", "--json", "nameWithOwner,url,defaultBranchRef,viewerPermission,isPrivate,description"], {
     cwd,
     json: true,
+    githubAccount: input.githubAccount,
     allowFailure: true
   });
-  const auth = safeRunGh(["auth", "status"], { cwd });
+  const auth = safeRunGh(["auth", "status"], {
+    cwd,
+    disableAuthResolution: true,
+    removeEnv: GITHUB_TOKEN_ENV_KEYS
+  });
   const git = {
     root: checkout.root,
     branch: checkout.branch,
@@ -1521,10 +1876,12 @@ async function githubCurrentContext(input = {}) {
       head: compactSha(git.head),
       defaultBranch: github?.defaultBranchRef?.name || null,
       viewerPermission: github?.viewerPermission || null,
+      selectedAccount: repo.auth?.account || null,
       fetched: freshness.ok,
       warnings: warnings.length
     },
     ghAuthStatus: auth.stdout.trim() || auth.stderr.trim(),
+    authSelection: repo.auth || null,
     warnings
   };
 }
@@ -1541,9 +1898,10 @@ async function githubRepoView(input = {}) {
     args.push(input.repo);
   }
   args.push("--json", jsonFields);
-  const result = runGh(args, { cwd, json: true });
+  const result = runGh(args, { cwd, json: true, githubAccount: input.githubAccount });
   return {
     command: result.command,
+    authSelection: result.auth,
     freshness,
     abstract: summarizeRepo(result.data, freshness),
     repo: result.data,
@@ -1568,9 +1926,10 @@ async function githubPrList(input = {}) {
   if (input.search) {
     args.push("--search", input.search);
   }
-  const result = runGh(addRepo(args, input.repo), { cwd, json: true });
+  const result = runGh(addRepo(args, input.repo), { cwd, json: true, githubAccount: input.githubAccount });
   return {
     command: result.command,
+    authSelection: result.auth,
     freshness,
     abstract: summarizePrList(result.data, freshness),
     pullRequests: result.data,
@@ -1580,7 +1939,7 @@ async function githubPrList(input = {}) {
 
 const PR_IDENTITY_FIELDS = "number,title,state,isDraft,author,baseRefName,headRefName,headRefOid,updatedAt,url";
 
-function resolveDefaultPullRequestSelector({ cwd, repo, number, toolName }) {
+function resolveDefaultPullRequestSelector({ cwd, repo, number, toolName, githubAccount }) {
   if (number != null) {
     return {
       selector: String(number),
@@ -1628,7 +1987,7 @@ function resolveDefaultPullRequestSelector({ cwd, repo, number, toolName }) {
     "--search",
     checkout.head
   ];
-  const result = runGh(addRepo(args, repo), { cwd, json: true });
+  const result = runGh(addRepo(args, repo), { cwd, json: true, githubAccount });
   const pullRequests = Array.isArray(result.data) ? result.data : [];
   const matches = pullRequests.filter((pr) => shaEquals(checkout.head, pr.headRefOid));
 
@@ -1658,13 +2017,14 @@ function resolveDefaultPullRequestSelector({ cwd, repo, number, toolName }) {
       url: match.url || null
     },
     commands: [result.command],
+    authSelection: result.auth,
     warnings: [
       `Detached checkout resolved by exact HEAD SHA ${compactSha(checkout.head)} to PR #${match.number}; no current-branch PR default was used.`
     ]
   };
 }
 
-function validateDetachedPrHead({ cwd, repo, prIdentity, toolName, pullRequest = null }) {
+function validateDetachedPrHead({ cwd, repo, prIdentity, toolName, pullRequest = null, githubAccount }) {
   if (prIdentity?.strategy !== "detached_head_sha") {
     return { commands: [] };
   }
@@ -1674,7 +2034,7 @@ function validateDetachedPrHead({ cwd, repo, prIdentity, toolName, pullRequest =
   if (!headRefOid) {
     const result = runGh(
       addRepo(["pr", "view", String(prIdentity.number), "--json", "headRefOid"], repo),
-      { cwd, json: true }
+      { cwd, json: true, githubAccount }
     );
     commands.push(result.command);
     headRefOid = trimOrNull(result.data?.headRefOid);
@@ -1833,7 +2193,7 @@ function searchReliabilityWarnings(type, query, resultCount = null) {
   return warnings;
 }
 
-async function readAuthoredPullRequestsGraphql({ cwd, author, limit, repo, includeChecks }) {
+async function readAuthoredPullRequestsGraphql({ cwd, author, limit, repo, includeChecks, githubAccount }) {
   const query = authoredPullRequestsGraphqlQuery({ explicitAuthor: Boolean(author), includeChecks });
   const pullRequests = [];
   const commands = [];
@@ -1846,7 +2206,7 @@ async function readAuthoredPullRequestsGraphql({ cwd, author, limit, repo, inclu
 
   while (pullRequests.length < limit) {
     const first = Math.min(100, limit - pullRequests.length);
-    const result = runGh(graphqlVariableArgs({ query, first, after: cursor, author }), { cwd, json: true });
+    const result = runGh(graphqlVariableArgs({ query, first, after: cursor, author }), { cwd, json: true, repoName: repo, githubAccount });
     commands.push(result.command);
     const errors = graphqlErrors(result.data);
     if (errors.length > 0) {
@@ -1854,7 +2214,7 @@ async function readAuthoredPullRequestsGraphql({ cwd, author, limit, repo, inclu
     }
     const subject = result.data?.data?.subject;
     if (!subject) {
-      throw new Error(author ? `GitHub user ${author} was not found or is not visible to the active account.` : "GraphQL viewer was not returned.");
+      throw new Error(author ? `GitHub user ${author} was not found or is not visible to the selected GitHub account.` : "GraphQL viewer was not returned.");
     }
     const connection = subject.pullRequests;
     subjectLogin = subject.login || subjectLogin;
@@ -1895,19 +2255,19 @@ async function readAuthoredPullRequestsGraphql({ cwd, author, limit, repo, inclu
   };
 }
 
-async function readAuthoredPullRequestsFromRepos({ cwd, author, repos, limit, includeChecks }) {
+async function readAuthoredPullRequestsFromRepos({ cwd, author, repos, limit, includeChecks, githubAccount }) {
   const pullRequests = [];
   const commands = [];
   const warnings = [];
   for (const repo of repos) {
-    const list = await githubPrList({ cwd, repo, state: "open", limit: 100 });
+    const list = await githubPrList({ cwd, repo, state: "open", limit: 100, githubAccount });
     commands.push(list.command);
     const repoMatches = list.pullRequests
       .filter((pr) => loginFromAuthor(pr.author) === author)
       .map((pr) => normalizeDiscoveryPullRequest({
         ...pr,
         repo,
-        checks: includeChecks ? readPrChecks(cwd, repo, pr.number).summary : null
+        checks: includeChecks ? readPrChecks(cwd, repo, pr.number, githubAccount).summary : null
       }));
     pullRequests.push(...repoMatches);
     warnings.push(...list.warnings);
@@ -1928,13 +2288,13 @@ async function readAuthoredPullRequestsFromRepos({ cwd, author, repos, limit, in
   };
 }
 
-async function readAuthoredPullRequestsFromSearch({ cwd, author, repo, limit }) {
+async function readAuthoredPullRequestsFromSearch({ cwd, author, repo, limit, githubAccount }) {
   const query = `is:pr is:open author:${author} archived:false`;
   const args = ["search", "prs", query, "--limit", limit, "--json", "number,title,state,repository,author,updatedAt,url,isDraft"];
   if (repo) {
     args.push("--repo", repo);
   }
-  const result = runGh(args, { cwd, json: true });
+  const result = runGh(args, { cwd, json: true, repoName: repo, githubAccount });
   return {
     strategy: "gh_search_prs_fallback",
     commands: [result.command],
@@ -1963,7 +2323,8 @@ async function githubMyPullRequests(input = {}) {
       author: requestedAuthor,
       limit,
       repo,
-      includeChecks
+      includeChecks,
+      githubAccount: input.githubAccount
     });
   } catch (error) {
     warnings.push(errorSummary(error));
@@ -1977,11 +2338,12 @@ async function githubMyPullRequests(input = {}) {
         author: fallbackAuthor,
         repos: repo ? fallbackRepos.filter((candidate) => candidate.toLowerCase() === repo.toLowerCase()) : fallbackRepos,
         limit,
-        includeChecks
+        includeChecks,
+        githubAccount: input.githubAccount
       });
       discovery.subjectLogin = fallbackAuthor;
     } else if (input.allowSearchFallback === true) {
-      discovery = await readAuthoredPullRequestsFromSearch({ cwd, author: fallbackAuthor, repo, limit });
+      discovery = await readAuthoredPullRequestsFromSearch({ cwd, author: fallbackAuthor, repo, limit, githubAccount: input.githubAccount });
       discovery.subjectLogin = fallbackAuthor;
     } else {
       throw error;
@@ -2058,7 +2420,7 @@ function compareStatusToStaleness(status) {
   return "unknown";
 }
 
-function readPullRequestStaleness(cwd, pr) {
+function readPullRequestStaleness(cwd, pr, githubAccount = null) {
   if (!pr.repo || !pr.baseRefName || !pr.headRefName) {
     return {
       status: "unknown",
@@ -2078,7 +2440,7 @@ function readPullRequestStaleness(cwd, pr) {
     endpoint,
     "--jq",
     "{status: .status, aheadBy: .ahead_by, behindBy: .behind_by, baseCommit: .base_commit.sha, mergeBaseCommit: .merge_base_commit.sha}"
-  ], { cwd, json: true });
+  ], { cwd, json: true, repoName: pr.repo, githubAccount });
   if (result.status !== 0 || !result.data) {
     return {
       status: "unknown",
@@ -2095,7 +2457,8 @@ function readPullRequestStaleness(cwd, pr) {
     behindBy: result.data.behindBy ?? null,
     baseCommit: result.data.baseCommit || null,
     mergeBaseCommit: result.data.mergeBaseCommit || null,
-    command: result.command
+    command: result.command,
+    authSelection: result.auth || null
   };
 }
 
@@ -2227,7 +2590,8 @@ async function githubPrRebasePlan(input = {}) {
       repo,
       author: input.author,
       limit: input.limit ?? 100,
-      includeChecks: false
+      includeChecks: false,
+      githubAccount: input.githubAccount
     });
     pullRequests = discovery.pullRequests;
     warnings.push(...discovery.warnings);
@@ -2248,7 +2612,7 @@ async function githubPrRebasePlan(input = {}) {
   const stalenessByKey = new Map();
   if (checkStaleness) {
     for (const pr of pullRequests) {
-      stalenessByKey.set(pullRequestKey(pr), readPullRequestStaleness(cwd, pr));
+      stalenessByKey.set(pullRequestKey(pr), readPullRequestStaleness(cwd, pr, input.githubAccount));
     }
   }
 
@@ -2287,7 +2651,8 @@ async function githubPrView(input = {}) {
     cwd,
     repo: input.repo,
     number: input.number,
-    toolName: "github_pr_view"
+    toolName: "github_pr_view",
+    githubAccount: input.githubAccount
   });
   const args = ["pr", "view"];
   args.push(prIdentity.selector);
@@ -2298,18 +2663,20 @@ async function githubPrView(input = {}) {
       "number,title,state,isDraft,author,baseRefName,baseRefOid,headRefName,headRefOid,body,changedFiles,files,reviewDecision,reviewRequests,latestReviews,mergeable,mergeStateStatus,statusCheckRollup,updatedAt,url"
     )
   );
-  const result = runGh(addRepo(args, input.repo), { cwd, json: true });
+  const result = runGh(addRepo(args, input.repo), { cwd, json: true, githubAccount: input.githubAccount });
   const validation = validateDetachedPrHead({
     cwd,
     repo: input.repo,
     prIdentity: prIdentity.identity,
     toolName: "github_pr_view",
-    pullRequest: result.data
+    pullRequest: result.data,
+    githubAccount: input.githubAccount
   });
   return {
     command: result.command,
     resolutionCommands: prIdentity.commands,
     validationCommands: validation.commands,
+    authSelection: result.auth || prIdentity.authSelection || null,
     freshness,
     prIdentity: prIdentity.identity,
     abstract: summarizePr(result.data, freshness),
@@ -2325,7 +2692,8 @@ async function githubPrDiff(input = {}) {
     cwd,
     repo: input.repo,
     number: input.number,
-    toolName: "github_pr_diff"
+    toolName: "github_pr_diff",
+    githubAccount: input.githubAccount
   });
   const args = ["pr", "diff"];
   args.push(prIdentity.selector);
@@ -2345,14 +2713,16 @@ async function githubPrDiff(input = {}) {
     cwd,
     repo: input.repo,
     prIdentity: prIdentity.identity,
-    toolName: "github_pr_diff"
+    toolName: "github_pr_diff",
+    githubAccount: input.githubAccount
   });
-  const result = runGh(addRepo(args, input.repo), { cwd });
+  const result = runGh(addRepo(args, input.repo), { cwd, githubAccount: input.githubAccount });
   const diff = truncate(result.stdout, input.maxBytes || DEFAULT_MAX_BYTES);
   return {
     command: result.command,
     resolutionCommands: prIdentity.commands,
     validationCommands: validation.commands,
+    authSelection: result.auth || prIdentity.authSelection || null,
     freshness,
     prIdentity: prIdentity.identity,
     abstract: summarizeDiff(diff.text, diff.truncated, freshness),
@@ -2428,7 +2798,7 @@ query($owner: String!, $name: String!, $number: Int!) {
       "-F",
       `number=${number}`
     ],
-    { cwd, json: true }
+    { cwd, json: true, repoName: repo.nameWithOwner, githubAccount: input.githubAccount }
   );
   const pullRequest = result.data.data.repository.pullRequest;
   const truncated = Boolean(
@@ -2441,6 +2811,7 @@ query($owner: String!, $name: String!, $number: Int!) {
   }
   return {
     command: result.command,
+    authSelection: result.auth || null,
     repository: repo.nameWithOwner,
     freshness,
     abstract: summarizeReviewThreads(pullRequest, freshness),
@@ -2457,7 +2828,8 @@ async function githubChecks(input = {}) {
     cwd,
     repo: input.repo,
     number: input.number,
-    toolName: "github_checks"
+    toolName: "github_checks",
+    githubAccount: input.githubAccount
   });
   const args = ["pr", "checks"];
   args.push(prIdentity.selector);
@@ -2469,9 +2841,10 @@ async function githubChecks(input = {}) {
     cwd,
     repo: input.repo,
     prIdentity: prIdentity.identity,
-    toolName: "github_checks"
+    toolName: "github_checks",
+    githubAccount: input.githubAccount
   });
-  const result = runGh(addRepo(args, input.repo), { cwd, json: true, allowFailure: true });
+  const result = runGh(addRepo(args, input.repo), { cwd, json: true, allowFailure: true, githubAccount: input.githubAccount });
   if (result.status !== 0 && result.status !== 8) {
     throw new Error(result.stderr.trim() || result.stdout.trim() || "gh pr checks failed");
   }
@@ -2479,6 +2852,7 @@ async function githubChecks(input = {}) {
     command: result.command,
     resolutionCommands: prIdentity.commands,
     validationCommands: validation.commands,
+    authSelection: result.auth || prIdentity.authSelection || null,
     pending: result.status === 8,
     freshness,
     prIdentity: prIdentity.identity,
@@ -2488,7 +2862,7 @@ async function githubChecks(input = {}) {
   };
 }
 
-function readHandoffGraphql(cwd, repo, number) {
+function readHandoffGraphql(cwd, repo, number, githubAccount = null) {
   const query = `
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
@@ -2569,11 +2943,11 @@ query($owner: String!, $name: String!, $number: Int!) {
       "-F",
       `number=${number}`
     ],
-    { cwd, json: true }
+    { cwd, json: true, repoName: repo.nameWithOwner, githubAccount }
   );
 }
 
-function readPrChecks(cwd, repoNameWithOwner, number) {
+function readPrChecks(cwd, repoNameWithOwner, number, githubAccount = null) {
   const result = runGh(
     addRepo([
       "pr",
@@ -2582,7 +2956,7 @@ function readPrChecks(cwd, repoNameWithOwner, number) {
       "--json",
       "bucket,completedAt,description,event,link,name,startedAt,state,workflow"
     ], repoNameWithOwner),
-    { cwd, json: true, allowFailure: true }
+    { cwd, json: true, allowFailure: true, githubAccount }
   );
   if (result.status !== 0 && result.status !== 8) {
     throw new Error(result.stderr.trim() || result.stdout.trim() || "gh pr checks failed");
@@ -2640,12 +3014,12 @@ async function githubPrHandoffStatus(input = {}) {
   const expectedPrBodyContains = normalizeStringArray(input.expectedPrBodyContains, "expectedPrBodyContains");
   const approvedReplies = normalizeApprovedReplies(input.approvedReplies);
   const expectedReviewers = normalizeReviewers(input.expectedReviewers || input.reviewers || [], "expectedReviewers");
-  const graph = readHandoffGraphql(cwd, repo, number);
+  const graph = readHandoffGraphql(cwd, repo, number, input.githubAccount);
   const pullRequest = graph.data?.data?.repository?.pullRequest;
   if (!pullRequest) {
     throw new Error(`Pull request ${number} was not found in ${repo.nameWithOwner}.`);
   }
-  const checks = readPrChecks(cwd, repo.nameWithOwner, number);
+  const checks = readPrChecks(cwd, repo.nameWithOwner, number, input.githubAccount);
   const local = inspectLocalBranch(cwd, pullRequest.headRefName);
   const threads = classifyReviewThreads(pullRequest, approvedReplies);
   const reviewRequests = summarizeReviewRequests(pullRequest, expectedReviewers);
@@ -2769,9 +3143,10 @@ async function githubActionsRuns(input = {}) {
       args.push(flag, String(input[key]));
     }
   }
-  const result = runGh(addRepo(args, input.repo), { cwd, json: true });
+  const result = runGh(addRepo(args, input.repo), { cwd, json: true, githubAccount: input.githubAccount });
   return {
     command: result.command,
+    authSelection: result.auth,
     freshness,
     abstract: summarizeList("actions_runs", result.data, freshness),
     runs: result.data,
@@ -2807,9 +3182,10 @@ async function githubIssueList(input = {}) {
   if (input.author) {
     args.push("--author", input.author);
   }
-  const result = runGh(addRepo(args, input.repo), { cwd, json: true });
+  const result = runGh(addRepo(args, input.repo), { cwd, json: true, githubAccount: input.githubAccount });
   return {
     command: result.command,
+    authSelection: result.auth,
     freshness,
     abstract: summarizeList("issue_list", result.data, freshness),
     issues: result.data,
@@ -2830,9 +3206,10 @@ async function githubIssueView(input = {}) {
   if (input.comments) {
     args.push("--comments");
   }
-  const result = runGh(addRepo(args, input.repo), { cwd, json: true });
+  const result = runGh(addRepo(args, input.repo), { cwd, json: true, githubAccount: input.githubAccount });
   return {
     command: result.command,
+    authSelection: result.auth,
     freshness,
     abstract: {
       kind: "issue",
@@ -2867,9 +3244,10 @@ async function githubReleaseList(input = {}) {
   if (input.order) {
     args.push("--order", input.order);
   }
-  const result = runGh(addRepo(args, input.repo), { cwd, json: true });
+  const result = runGh(addRepo(args, input.repo), { cwd, json: true, githubAccount: input.githubAccount });
   return {
     command: result.command,
+    authSelection: result.auth,
     freshness,
     abstract: summarizeList("release_list", result.data, freshness),
     releases: result.data,
@@ -2896,13 +3274,14 @@ async function githubSearch(input = {}) {
     code: "path,repository,sha,textMatches,url",
     repos: "fullName,description,updatedAt,url,visibility"
   }[type];
-  const result = runGh([...base, "--json", jsonFields], { json: true });
+  const result = runGh([...base, "--json", jsonFields], { json: true, repoName: search.repo, githubAccount: input.githubAccount });
   const warnings = [
     ...search.warnings,
     ...searchReliabilityWarnings(type, query, Array.isArray(result.data) ? result.data.length : null)
   ];
   return {
     command: result.command,
+    authSelection: result.auth,
     search: {
       strategy: `gh_search_${type}`,
       normalizedQuery: query,
@@ -2915,10 +3294,19 @@ async function githubSearch(input = {}) {
   };
 }
 
-function buildMutation(operation, payload = {}, cwd = process.cwd()) {
+function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccount = null) {
   const repo = payload.repo ? parseRepoName(payload.repo).nameWithOwner : undefined;
   const riskNotes = ["This is a public GitHub write unless the target repository is private."];
-  const command = (args) => ({ kind: "gh", bin: GH_BIN, args: addRepo(args, repo), cwd, riskNotes: [...riskNotes] });
+  const account = requireOptionalLogin(githubAccount || payload.githubAccount, "githubAccount");
+  const command = (args) => ({
+    kind: "gh",
+    bin: GH_BIN,
+    args: addRepo(args, repo),
+    cwd,
+    repo,
+    githubAccount: account,
+    riskNotes: [...riskNotes]
+  });
   switch (operation) {
     case "pr_comment": {
       const number = requirePositiveInteger(payload.number, "payload.number");
@@ -2936,6 +3324,8 @@ function buildMutation(operation, payload = {}, cwd = process.cwd()) {
         bin: GH_BIN,
         args: ["api", "graphql", "--raw-field", `query=${query}`, "--raw-field", `threadId=${threadId}`, "--raw-field", `body=${body}`],
         cwd,
+        repo,
+        githubAccount: account,
         riskNotes: [...riskNotes]
       };
     }
@@ -3112,6 +3502,7 @@ async function githubReviewHandoffPreview(input = {}) {
     kind: "review_handoff",
     cwd,
     repo: status.repository,
+    githubAccount: input.githubAccount || null,
     number,
     expectedHeadSha,
     approvedReplies,
@@ -3160,7 +3551,8 @@ async function executeReviewHandoffPlan(plan) {
     expectedHeadSha: plan.expectedHeadSha,
     approvedReplies: plan.approvedReplies,
     expectedPrBodyContains: plan.prBody == null ? [] : [plan.prBody],
-    expectedReviewers: plan.reviewers
+    expectedReviewers: plan.reviewers,
+    githubAccount: plan.githubAccount
   });
   if (plan.expectedHeadSha && before.state.remoteHasExpectedCommit === false) {
     throw new Error(`PR #${plan.number} head ${before.pullRequest.headRefOid} does not match expectedHeadSha ${plan.expectedHeadSha}.`);
@@ -3184,7 +3576,7 @@ async function executeReviewHandoffPlan(plan) {
         "-f",
         `body=${reply.body}`
       ],
-      { cwd: plan.cwd, json: true }
+      { cwd: plan.cwd, json: true, repoName: plan.repo, githubAccount: plan.githubAccount, requireScopedAuth: true }
     );
     postedReplies.push({
       commentId: reply.commentId,
@@ -3202,7 +3594,8 @@ async function executeReviewHandoffPlan(plan) {
     expectedHeadSha: plan.expectedHeadSha,
     approvedReplies: plan.approvedReplies,
     expectedPrBodyContains: plan.prBody == null ? [] : [plan.prBody],
-    expectedReviewers: plan.reviewers
+    expectedReviewers: plan.reviewers,
+    githubAccount: plan.githubAccount
   });
   if (afterReplies.threads.approvedButUnposted.length > 0) {
     throw new Error("One or more approved replies were not found in readback; stopping before PR body update or reviewer request.");
@@ -3212,7 +3605,7 @@ async function executeReviewHandoffPlan(plan) {
   if (plan.prBody != null) {
     const result = runGh(
       addRepo(["pr", "edit", String(plan.number), "--body", plan.prBody], plan.repo),
-      { cwd: plan.cwd }
+      { cwd: plan.cwd, githubAccount: plan.githubAccount, requireScopedAuth: true }
     );
     prBodyUpdate = {
       command: result.command,
@@ -3221,7 +3614,7 @@ async function executeReviewHandoffPlan(plan) {
     };
   }
 
-  const checks = readPrChecks(plan.cwd, plan.repo, plan.number);
+  const checks = readPrChecks(plan.cwd, plan.repo, plan.number, plan.githubAccount);
   let reviewerRequest = null;
   if (plan.reviewers.length > 0) {
     if (afterReplies.pullRequest.isDraft) {
@@ -3231,7 +3624,7 @@ async function executeReviewHandoffPlan(plan) {
     } else {
       const result = runGh(
         addRepo(["pr", "edit", String(plan.number), "--add-reviewer", plan.reviewers.join(",")], plan.repo),
-        { cwd: plan.cwd }
+        { cwd: plan.cwd, githubAccount: plan.githubAccount, requireScopedAuth: true }
       );
       reviewerRequest = {
         skipped: false,
@@ -3250,7 +3643,8 @@ async function executeReviewHandoffPlan(plan) {
     expectedHeadSha: plan.expectedHeadSha,
     approvedReplies: plan.approvedReplies,
     expectedPrBodyContains: plan.prBody == null ? [] : [plan.prBody],
-    expectedReviewers: plan.reviewers
+    expectedReviewers: plan.reviewers,
+    githubAccount: plan.githubAccount
   });
   return {
     operation: "review_handoff",
@@ -3272,6 +3666,7 @@ function hashMutation(plan) {
     args: plan.args || null,
     cwd: plan.cwd,
     repo: plan.repo || null,
+    githubAccount: plan.githubAccount || null,
     number: plan.number || null,
     approvedReplies: plan.approvedReplies || null,
     prBody: plan.prBody || null,
@@ -3284,7 +3679,7 @@ async function githubMutationPreview(input = {}) {
   const operation = requireString(input.operation, "operation");
   const payload = input.payload || {};
   const cwd = cwdFrom(input);
-  const plan = buildMutation(operation, payload, cwd);
+  const plan = buildMutation(operation, payload, cwd, input.githubAccount);
   const token = randomBytes(18).toString("base64url");
   const expiresAt = new Date(Date.now() + TOKEN_TTL_MS).toISOString();
   const approval = {
@@ -3335,7 +3730,15 @@ async function githubMutationExecute(input = {}) {
   if (approval.plan.kind === "review_handoff") {
     return executeReviewHandoffPlan(approval.plan);
   }
-  const result = run(approval.plan.bin, approval.plan.args, { cwd: approval.plan.cwd, maxBuffer: 20 * 1024 * 1024 });
+  const result = approval.plan.kind === "gh"
+    ? runGh(approval.plan.args, {
+      cwd: approval.plan.cwd,
+      maxBuffer: 20 * 1024 * 1024,
+      repoName: approval.plan.repo,
+      githubAccount: approval.plan.githubAccount,
+      requireScopedAuth: true
+    })
+    : run(approval.plan.bin, approval.plan.args, { cwd: approval.plan.cwd, maxBuffer: 20 * 1024 * 1024 });
   return {
     operation: approval.operation,
     command: {
@@ -3344,6 +3747,7 @@ async function githubMutationExecute(input = {}) {
       cwd: approval.plan.cwd,
       shellPreview: commandPreview([approval.plan.bin, ...approval.plan.args])
     },
+    authSelection: result.auth || null,
     stdout: truncate(result.stdout, input.maxBytes || DEFAULT_MAX_BYTES),
     stderr: truncate(result.stderr, input.maxBytes || DEFAULT_MAX_BYTES),
     status: result.status

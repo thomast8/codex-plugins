@@ -27,7 +27,16 @@ fs.writeFileSync(stateFile, JSON.stringify({
 fs.writeFileSync(fakeGh, `#!/usr/bin/env node
 import fs from "node:fs";
 const args = process.argv.slice(2);
-fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "gh", args, cwd: process.cwd() }) + "\\n");
+function tokenAccount() {
+  if (process.env.GH_TOKEN === "token-owner") {
+    return "owner";
+  }
+  if (process.env.GH_TOKEN === "token-thomast8") {
+    return "thomast8";
+  }
+  return null;
+}
+fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "gh", args, cwd: process.cwd(), tokenAccount: tokenAccount() }) + "\\n");
 function state() {
   try {
     return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
@@ -43,9 +52,47 @@ if (args[0] === "auth" && args[1] === "status") {
   console.log("github.com");
   console.log("  \\u2713 Logged in to github.com account thomast8");
   console.log("  - Active account: true");
+  console.log("");
+  console.log("  \\u2713 Logged in to github.com account owner");
+  console.log("  - Active account: false");
+  console.log("");
+  console.log("  \\u2713 Logged in to github.com account fallback");
+  console.log("  - Active account: false");
   process.exit(0);
 }
+if (args[0] === "auth" && args[1] === "token") {
+  const userIndex = args.indexOf("--user");
+  const user = userIndex === -1 ? "thomast8" : args[userIndex + 1];
+  if (user === "owner") {
+    console.log("token-owner");
+    process.exit(0);
+  }
+  if (user === "thomast8") {
+    console.log("token-thomast8");
+    process.exit(0);
+  }
+  if (user === "fallback") {
+    console.error("token unavailable for fallback");
+    process.exit(1);
+  }
+  console.error("unknown fake account " + user);
+  process.exit(1);
+}
+if (args[0] === "auth" && args[1] === "switch") {
+  console.error("contract must not switch global gh accounts");
+  process.exit(1);
+}
+if (args[0] === "auth" && args[1] === "setup-git") {
+  console.error("contract must not rewrite global git credential configuration");
+  process.exit(1);
+}
 if (args[0] === "repo" && args[1] === "view") {
+  const current = state();
+  const targetRepo = args.find((arg, index) => index > 1 && !String(arg).startsWith("-") && String(arg).includes("/"));
+  if (current.denyRepoViewFor && targetRepo === current.denyRepoViewFor) {
+    console.error("repo access denied for " + targetRepo);
+    process.exit(1);
+  }
   console.log(JSON.stringify({
     nameWithOwner: "owner/repo",
     url: "https://github.com/owner/repo",
@@ -611,6 +658,40 @@ async function main() {
   if (setup.git?.origin !== "https://[redacted]@github.com/owner/repo.git") {
     throw new Error("github_setup_status did not redact credentialed origin URL");
   }
+  if (setup.authSelection?.strategy !== "owner_login_match" || setup.authSelection?.account !== "owner") {
+    throw new Error("github_setup_status did not select the repo-owner gh account without switching globally");
+  }
+  const setupRepoView = readCommandLog().find((call) => call.bin === "gh" && call.args[0] === "repo" && call.args[1] === "view");
+  if (setupRepoView?.tokenAccount !== "owner") {
+    throw new Error("repo-aware gh calls should use the owner account token for owner/repo");
+  }
+  const ambiguousRepo = await request("tools/call", {
+    name: "github_repo_view",
+    arguments: { cwd: pluginRoot, repo: "shared/repo" }
+  });
+  if (ambiguousRepo.result?.isError !== true || !textContent(ambiguousRepo).includes("GitHub account selection for shared/repo is ambiguous")) {
+    throw new Error("github_repo_view should fail closed when multiple accounts have the same top repo permission");
+  }
+  const ambiguousPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "issue_comment",
+      payload: {
+        repo: "shared/repo",
+        number: 1,
+        body: "Ambiguous auth should not execute."
+      }
+    }
+  });
+  const ambiguousExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: {
+      approvalToken: jsonContent(ambiguousPreview).approvalToken
+    }
+  });
+  if (ambiguousExecute.result?.isError !== true || !textContent(ambiguousExecute).includes("GitHub account selection for shared/repo is ambiguous")) {
+    throw new Error("github_mutation_execute should fail closed when account selection is ambiguous");
+  }
 
   const detachedHead = "dddddddddddddddddddddddddddddddddddddddd";
   fs.writeFileSync(stateFile, JSON.stringify({
@@ -734,6 +815,41 @@ async function main() {
   if (childPlan?.dependsOn?.[0]?.number !== 1 || childPlan?.staleness?.status !== "stale") {
     throw new Error("github_pr_rebase_plan did not report child dependency and stale status");
   }
+
+  const callsBeforeExplicitRebasePlan = readCommandLog().length;
+  await request("tools/call", {
+    name: "github_pr_rebase_plan",
+    arguments: {
+      cwd: pluginRoot,
+      repo: "owner/repo",
+      checkStaleness: true,
+      githubAccount: "owner"
+    }
+  });
+  const explicitRebaseApiCalls = readCommandLog()
+    .slice(callsBeforeExplicitRebasePlan)
+    .filter((call) => call.bin === "gh" && call.args[0] === "api");
+  if (explicitRebaseApiCalls.length === 0 || explicitRebaseApiCalls.some((call) => call.tokenAccount !== "owner")) {
+    throw new Error("github_pr_rebase_plan did not preserve explicit githubAccount through discovery and staleness reads");
+  }
+
+  const callsBeforeReviewThreads = readCommandLog().length;
+  const reviewThreads = await request("tools/call", {
+    name: "github_pr_review_threads",
+    arguments: {
+      cwd: pluginRoot,
+      repo: "owner/repo",
+      number: 1,
+      githubAccount: "owner"
+    }
+  });
+  const reviewThreadsJson = jsonContent(reviewThreads);
+  const reviewThreadApiCalls = readCommandLog()
+    .slice(callsBeforeReviewThreads)
+    .filter((call) => call.bin === "gh" && call.args[0] === "api");
+  if (reviewThreadsJson.authSelection?.account !== "owner" || reviewThreadApiCalls.some((call) => call.tokenAccount !== "owner")) {
+    throw new Error("github_pr_review_threads did not preserve explicit githubAccount for GraphQL reads");
+  }
   const callsBeforeMutationPreview = readCommandLog().length;
 
   const preview = await request("tools/call", {
@@ -760,6 +876,41 @@ async function main() {
   if (readCommandLog().length !== callsBeforeMutationPreview) {
     throw new Error("github_mutation_preview should not invoke gh or git");
   }
+
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    denyRepoViewFor: "fallback/repo"
+  }), "utf8");
+  const fallbackPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "issue_comment",
+      payload: {
+        repo: "fallback/repo",
+        number: 1,
+        body: "Fallback auth should not execute."
+      }
+    }
+  });
+  const fallbackPreviewJson = jsonContent(fallbackPreview);
+  const fallbackExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: {
+      approvalToken: fallbackPreviewJson.approvalToken
+    }
+  });
+  if (fallbackExecute.result?.isError !== true || !textContent(fallbackExecute).includes("without verified command-scoped GitHub auth")) {
+    throw new Error("github_mutation_execute must fail closed instead of writing with active-account fallback auth");
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292
+  }), "utf8");
 
   const handoffStatus = await request("tools/call", {
     name: "github_pr_handoff_status",
