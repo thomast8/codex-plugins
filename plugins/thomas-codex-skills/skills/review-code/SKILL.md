@@ -155,6 +155,50 @@ because an executable is missing, dependency extras are not selected, caches are
 blocked, or the worktree is detached/fresh, identify the canonical wrapper and
 use that in review prompts.
 
+## PR Body Manual Verification
+
+For every PR review, read the PR description/body through the provider before
+the final review. If it contains manual verification, test plan, smoke test, or
+reviewer-runnable steps, extract those steps and run through them when the
+setup is available and safe. This includes checkbox items, numbered steps,
+code-fenced commands, endpoint calls, UI flows, database checks, and described
+manual app behavior.
+
+Treat PR-body manual steps as claims made by the PR author:
+
+- Identify what each step is trying to prove.
+- Run the exact command or flow as written when practical.
+- If a step needs light setup, perform the setup when it is safe and scoped.
+- If a step is ambiguous, rewrite the smallest reviewer-runnable interpretation
+  and say what assumption was made.
+- If a step is unsafe, destructive, credential-gated, service-gated, or
+  impossible in the current environment, do not fake it. Mark it blocked and
+  explain the missing dependency or safety boundary.
+- If a step fails because the PR instructions are wrong, treat that as review
+  evidence. Calibrate severity by whether it blocks reviewers from validating
+  the PR's advertised behavior or reveals a product bug.
+
+When review fan-out is already warranted and the manual steps can run in
+parallel, spawn one focused manual-verification sub-agent in addition to the
+normal lenses. Use a default agent if no dedicated semantic role exists. Give
+it the PR body excerpt, absolute repo path, base/head scope, provider metadata,
+known setup commands, and the same no-escalation/no-network-git constraints as
+the other lanes. Its job is only to execute or trace the PR-body manual steps
+and return a step-by-step ledger. For small local reviews, the coordinator may
+run this ledger directly instead of spawning a sub-agent.
+
+The final review must include a `Manual Verification` section whenever the PR
+body had manual steps. Walk the user through each step in plain language:
+
+- Step label or quoted summary.
+- What it was trying to prove.
+- Exact command, API call, app flow, or deterministic trace used.
+- Observed output, state transition, screenshot/readback, or failure.
+- Status: passed, failed, adjusted, or blocked.
+
+Do not collapse this into "manual tests passed." The user should be able to see
+what was tested and why it mattered.
+
 The coordinator should run or validate at least one representative command in
 the parent loop before delegation when practical, especially in fresh worktrees
 or after dependency setup. Pass each review lane a `Known Verification
@@ -205,10 +249,12 @@ table, summarize it in the cell and put the exact command immediately below the
 table under `Reproduction Details`.
 
 After the findings table, include a short `Verification` line or paragraph with
-the exact checks run or parent-supplied checks relied on, plus their results. If
-there are no confirmed findings, say "No confirmed findings" first, then include
-residual risks and verification. Put unreproduced concerns in a separate
-`Unverified Risks` section only when they are useful and clearly blocked.
+the exact checks run or parent-supplied checks relied on, plus their results.
+If the PR body had manual verification steps, also include the `Manual
+Verification` section described above. If there are no confirmed findings, say
+"No confirmed findings" first, then include residual risks and verification.
+Put unreproduced concerns in a separate `Unverified Risks` section only when
+they are useful and clearly blocked.
 
 ## Public Review Comments
 
@@ -320,6 +366,13 @@ spawn_agent(
 spawn_agent(
   agent_type: "review-tests",
   message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: tests only - do tests actually exercise the changed behavior? mocks hiding real integration? missing edge cases? flaky timing? assertions that would pass on a broken implementation? Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate test gaps before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+)
+```
+
+**Lane E - PR body manual verification, optional when applicable:**
+```
+spawn_agent(
+  message: "Review <self-contained intent + repo path + diff scope + PR body manual verification excerpt + Known Verification Evidence>. Lens: PR body manual verification only - extract each manual/test-plan step from the PR description, run the exact step when safe and available, and explain what each step proves. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied setup and verification as authoritative. If a step needs unavailable credentials, services, destructive actions, or approval, mark it blocked with the exact missing dependency and closest safe evidence. Return a step-by-step ledger with: step label, claim proved, exact command/API/app flow/trace, observed output or state, status, and any failure signal. Do not report code-review findings except when a manual step failure proves a concrete bug or broken PR instruction."
 )
 ```
 
