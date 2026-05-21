@@ -142,7 +142,12 @@ the absence of findings with extra broad tests. A sub-agent may rerun a
 parent-verified command only when it has a specific candidate finding that
 cannot be checked by file reads, deterministic trace, or existing evidence.
 
-Sub-agents must not request sandbox escalation or approval prompts. If a command
+Sub-agents must not request sandbox escalation or approval prompts. The
+workspace-write sandbox already grants writable access to the repo, `/tmp`,
+`$TMPDIR`, and the shared dev tool caches (`~/.cache`, `~/Library/Caches`,
+`~/.npm`) with network enabled, so `uv`, `pip`, `npm`, `pre-commit`, and the
+`just` recipes that drive them run directly in-sandbox; run those verification
+commands rather than pre-emptively marking them blocked. If a command
 would need approval, hits sandbox or tooling failure, or requires external
 state, record the exact blocked command, why it matters, and the closest
 sandbox-safe evidence instead. Do not start workaround loops such as cache
@@ -459,7 +464,7 @@ the default agent type and keep the same prompt text.
 **Lane F - PR body manual verification, optional when applicable:**
 ```
 spawn_agent(
-  message: "Review <self-contained intent + repo path + diff scope + PR body manual verification excerpt + Known Verification Evidence>. Lens: PR body manual verification only - extract each manual/test-plan step from the PR description, run the exact step when safe and available or after the smallest safe repo-owned setup, and explain what each step proves. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied setup and verification as authoritative. If a local service, dependency, fixture, database, generated artifact, or temp state is missing, first try the smallest sandbox-safe setup. If setup needs unavailable credentials, unsafe/destructive actions, external services, or approval, mark it blocked with the exact missing dependency or blocked setup command and closest safe evidence. Return a step-by-step ledger with: step label, claim proved, exact command/API/app flow/trace, observed output or state, status, and any failure signal. Do not report code-review findings except when a manual step failure proves a concrete bug or broken PR instruction."
+  message: "Review <self-contained intent + repo path + diff scope + PR body manual verification excerpt + Known Verification Evidence>. Lens: PR body manual verification only - extract each manual/test-plan step from the PR description, run the exact step when safe and available or after the smallest safe repo-owned setup, and explain what each step proves. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Cache-using commands (`uv`, `pip`, `npm`, `pre-commit`, `just`) run directly in the workspace-write sandbox with network and writable tool caches (`~/.cache`, `~/Library/Caches`, `~/.npm`), so run them rather than marking them blocked. Treat parent-supplied setup and verification as authoritative. If a local service, dependency, fixture, database, generated artifact, or temp state is missing, first try the smallest sandbox-safe setup. If setup needs unavailable credentials, unsafe/destructive actions, external services, or approval, mark it blocked with the exact missing dependency or blocked setup command and closest safe evidence. Return a step-by-step ledger with: step label, claim proved, exact command/API/app flow/trace, observed output or state, status, and any failure signal. Do not report code-review findings except when a manual step failure proves a concrete bug or broken PR instruction."
 )
 ```
 
