@@ -35,6 +35,12 @@ Choose the lightest review mode that still matches the risk:
 | Medium or non-trivial code changes | Spawn the warranted subset of lanes, usually correctness plus tests, adding design or security when relevant |
 | Risky code, broad refactors, release/publish gates, PR reviews, data-loss risk, auth/security work, or explicit deep-review requests | Spawn the full parallel lane set |
 
+For PR reviews, deep reviews, and changes that touch public APIs, schemas,
+user-visible workflow artifacts, docs, or integration contracts, include the
+product/API contract lane. Product findings are formal review findings, not
+private follow-up notes. They must be grounded in a concrete changed surface and
+use the same severity and evidence contract as the other lanes.
+
 Do not keep re-running sub-agent reviews after every tiny follow-up fix. Once
 the change is small, well covered, and the prior review findings are addressed,
 prefer a local final sanity check plus targeted verification.
@@ -307,7 +313,8 @@ Agents should not run `git fetch`, `git pull`, `gt sync`, or any network git ope
 When the chosen review depth calls for more than one sub-agent, dispatch all
 selected agents before waiting for any one of them. In Codex, use `spawn_agent`
 with the semantic `agent_type` for each lane:
-`review-correctness`, `review-design`, `review-security`, and `review-tests`.
+`review-correctness`, `review-design`, `review-security`, `review-tests`, and
+`review-product` when that custom agent is exposed by the current runtime.
 Do not set `fork_context` with these semantic roles. Full-history forked agents
 inherit the parent agent type, model, and reasoning effort, so current Codex
 runtimes reject the combination of `fork_context: true` plus `agent_type`. The
@@ -322,7 +329,9 @@ shows what each agent is actually doing. Omit `model` and
 `functions.spawn_agent` calls together. Otherwise, call `spawn_agent` for each
 selected lane back-to-back, then use `wait_agent`. If a semantic role is
 unavailable in the current runtime, retry that lane once without `agent_type`
-and report the fallback.
+and report the fallback. For the product/API contract lane specifically, use a
+default sub-agent with the same lane prompt until `review-product` appears in
+the runtime's available `agent_type` list.
 
 If the review depth calls for local review only, do not spawn sub-agents. Run
 the relevant lenses yourself, keep the output concise, and make clear that the
@@ -337,11 +346,63 @@ If `spawn_agent` or `wait_agent` is unavailable in the current Codex runtime, do
 not pretend a parallel review ran. Run the selected lenses sequentially in the
 current assistant and report that the review used the sequential fallback.
 
+## Review Lane Prompt Contract
+
+Use one shared prompt shape for all review lanes. Keep the lane-specific text
+short and put the common evidence, permission, and output rules in one place.
+
+Each lane prompt must include:
+
+- `Role`: the lane name and what it is responsible for.
+- `Scope`: absolute repo path, base/head or dirty-tree scope, key files, PR
+  metadata when available, and task intent.
+- `Requirements and claims`: relevant plan text, PR body excerpts, API/schema
+  excerpts, or reviewer-facing claims the lane should verify.
+- `Known Verification Evidence`: parent-run commands, results, smoke-test
+  output, blocked commands, and commands the lane should not rerun.
+- `Rules`: inspect the actual diff and surrounding code; do not trust summaries
+  or implementer reports; do not run `git fetch`, `git pull`, `gt sync`, or any
+  network git operation; do not request sandbox escalation or approval prompts.
+- `Evidence gate`: report only concrete issues grounded in changed behavior,
+  changed contracts, deterministic traces, schema or docs comparisons, API
+  response gaps, or reviewer-runnable commands. If proof is blocked, report the
+  exact blocker and closest evidence instead of looping on workarounds.
+- `Output`: confirmed findings first, using severity, file/line, claim,
+  evidence, expected behavior or contract, observed behavior or gap, failure
+  signal, and fix. If there are no confirmed issues, say so and note residual
+  risk.
+
+**Shared prompt body:**
+```
+Review <self-contained scope and intent>.
+
+Known Verification Evidence:
+<exact parent-run commands, results, smoke tests, blocked commands, and commands
+not to rerun>
+
+Rules:
+- Inspect the actual diff and relevant surrounding code.
+- Do not trust summaries, implementer reports, or PR claims without checking.
+- Do not run git fetch, git pull, gt sync, or any network git operation.
+- Do not request sandbox escalation or approval prompts.
+- Treat parent-supplied verified commands and smoke-test results as review
+  evidence; cite them instead of rerunning broad checks.
+- Reproduce only concrete candidate findings before listing them as issues.
+- If a command would need approval, hits sandbox/tooling failure, or requires
+  external state, record the blocked command and closest evidence.
+
+Output:
+- Confirmed findings first.
+- For each finding: severity, file/line, claim, evidence, expected behavior or
+  contract, observed behavior or gap, failure signal, and fix.
+- If no confirmed issues, say so and note residual risk.
+```
+
 **Lane A - Correctness & bugs:**
 ```
 spawn_agent(
   agent_type: "review-correctness",
-  message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: correctness only - logic errors, off-by-ones, edge cases, null/empty handling, race conditions, error-path bugs, incorrect async/await, state-machine holes. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate findings before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+  message: "<shared prompt body>. Role: correctness lane. Focus only on logic errors, off-by-ones, edge cases, null and empty handling, race conditions, error-path bugs, incorrect async/await, state-machine holes, and behavior regressions."
 )
 ```
 
@@ -349,7 +410,7 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-design",
-  message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: design only - API shape, naming, abstraction boundaries, coupling, dead or speculative code, premature abstractions, duplication, maintainability. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate findings before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+  message: "<shared prompt body>. Role: design lane. Focus only on API shape, naming, abstraction boundaries, coupling, dead or speculative code, premature abstractions, duplication, and maintainability risks grounded in the changed surface."
 )
 ```
 
@@ -357,7 +418,7 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-security",
-  message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: security only - authn/authz, input validation, injection (SQL, command, path, template), SSRF, secrets in code/logs, unsafe deserialization, crypto misuse, dependency risk. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate findings before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+  message: "<shared prompt body>. Role: security lane. Focus only on authn/authz, input validation, SQL, command, path, and template injection, SSRF, secrets in code or logs, unsafe deserialization, crypto misuse, dependency risk, unsafe public writes, and concrete attack paths."
 )
 ```
 
@@ -365,11 +426,22 @@ spawn_agent(
 ```
 spawn_agent(
   agent_type: "review-tests",
-  message: "Review <self-contained intent + repo path + diff scope + Known Verification Evidence>. Lens: tests only - do tests actually exercise the changed behavior? mocks hiding real integration? missing edge cases? flaky timing? assertions that would pass on a broken implementation? Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied verified commands and smoke-test results as review evidence; cite them instead of rerunning them. Reproduce only concrete candidate test gaps before listing them as issues, using reviewer-runnable evidence: claim, safety/setup, command or concrete trace, expected behavior, observed behavior, and failure signal. Rerun a parent-verified command only when a specific candidate cannot be checked by file reads, deterministic trace, or existing evidence. If a command would need approval, hits sandbox/tooling failure, or requires external state, record the blocked command and closest evidence instead of starting workaround loops such as cache relocation, fake shims, alternate runners, or reconfigured tool caches. Return confirmed findings first with file/line references, severity, reproduction rubric, reasoning, and concrete fixes. If no confirmed issues, say so and note residual risk."
+  message: "<shared prompt body>. Role: tests lane. Focus only on whether tests exercise changed behavior, mocks hide integration risk, edge cases are missing, timing is flaky, assertions are weak, fixtures are unrealistic, or a broken implementation would still pass."
 )
 ```
 
-**Lane E - PR body manual verification, optional when applicable:**
+**Lane E - Product/API contract, optional when applicable:**
+```
+spawn_agent(
+  agent_type: "review-product",
+  message: "<shared prompt body>. Role: product/API contract lane. Focus only on changed public APIs, response schemas, workflow artifacts, user-visible docs, validation claims, warning surfaces, ambiguous selection rules, inspectability, unsupported semantics, and integration contract clarity. Prefer P2 or P3; use P1 only when the gap blocks the PR's stated purpose or creates likely user, data, or contract harm. Do not report vague nice-to-have ideas."
+)
+```
+
+If `review-product` is not exposed by the current runtime, spawn this lane with
+the default agent type and keep the same prompt text.
+
+**Lane F - PR body manual verification, optional when applicable:**
 ```
 spawn_agent(
   message: "Review <self-contained intent + repo path + diff scope + PR body manual verification excerpt + Known Verification Evidence>. Lens: PR body manual verification only - extract each manual/test-plan step from the PR description, run the exact step when safe and available, and explain what each step proves. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied setup and verification as authoritative. If a step needs unavailable credentials, services, destructive actions, or approval, mark it blocked with the exact missing dependency and closest safe evidence. Return a step-by-step ledger with: step label, claim proved, exact command/API/app flow/trace, observed output or state, status, and any failure signal. Do not report code-review findings except when a manual step failure proves a concrete bug or broken PR instruction."
@@ -384,6 +456,9 @@ Before presenting findings, apply the Finding Reproduction Gate. Sub-agent
 agreement raises confidence, but it does not replace reproduction. The final
 review should list only reproduced findings, with unreproduced concerns either
 dropped or placed in "Unverified Risks" with the blocker.
+For product/API contract findings, reproduction evidence may be a deterministic
+contract trace, schema or docs comparison, API response gap, or concrete
+PR/body claim mismatch when a failing command is not the right proof shape.
 
 If the current task is implementation, PR preparation, or finishing a change, fix
 confirmed issues and valid low-risk suggestions before claiming done. If the user
@@ -392,9 +467,10 @@ high-risk changes, or judgment calls to the user.
 
 ## Failures
 
-If one lane errors out, proceed with the other three and report the failed lane.
+If one lane errors out, proceed with the remaining selected lanes and report the
+failed lane.
 If two or more lanes fail during a full review, rerun those lenses sequentially
-in the current assistant or stop and surface the errors. For a full four-lane
-review, do not claim the review gate passed unless at least three lenses
-completed. For a smaller risk-scaled review, report exactly which lenses ran and
-which, if any, failed.
+in the current assistant or stop and surface the errors. For a full review, do
+not claim the review gate passed unless all required lanes completed or every
+failed required lane was rerun sequentially. For a smaller risk-scaled review,
+report exactly which lenses ran and which, if any, failed.
