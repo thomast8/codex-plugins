@@ -144,6 +144,51 @@ relocation, fake shims, alternate runners, or reconfigured tool caches unless
 that workaround is the smallest safe way to reproduce a specific candidate
 finding.
 
+## Tooling and Command Handoff
+
+Before spawning review lanes, the coordinator should discover the repository's
+canonical local commands for tests, lint, type checks, smoke tests, and service
+startup. Prefer repo-owned wrappers and task runners such as `just`, `make`,
+`npm run`, `scripts/*`, `uv run --extra ...`, or checked-in helper scripts over
+generic commands when the repository provides them. If a generic command fails
+because an executable is missing, dependency extras are not selected, caches are
+blocked, or the worktree is detached/fresh, identify the canonical wrapper and
+use that in review prompts.
+
+The coordinator should run or validate at least one representative command in
+the parent loop before delegation when practical, especially in fresh worktrees
+or after dependency setup. Pass each review lane a `Known Verification
+Evidence` block with exact command lines, working directory, commit/base/head,
+results, and any commands that are known not to work. Sub-agents should use
+those supplied commands for candidate reproduction instead of falling back to
+static-only review. If they still cannot run a needed command without approval,
+they must report the blocked command and closest evidence.
+
+## Severity Calibration
+
+Choose severity from concrete impact, not from habit. Do not default everything
+to `P2`.
+
+- `P0`: Breaks production or release safety immediately, causes broad data loss,
+  bypasses critical security controls, or blocks a live system with no
+  reasonable workaround.
+- `P1`: Blocks the PR's main advertised behavior, creates a high-confidence
+  security or data-loss risk, breaks a critical user path, corrupts persisted
+  state, or will almost certainly fail in normal use.
+- `P2`: Important bug or contract break that affects real users or maintainers
+  but has a workaround, limited scope, or does not block the whole feature.
+- `P3`: Minor correctness, maintainability, coverage, docs, diagnostics, or edge
+  case issue that should be fixed but does not materially change the feature's
+  safety or core behavior.
+- `P4`: Nits and optional polish. Omit these from formal findings unless the
+  user explicitly wants exhaustive review.
+
+When deciding between adjacent levels, ask: does this block the PR's stated
+purpose, can a normal user hit it, can it lose or expose data, is there a
+reasonable workaround, and did reproduction prove a real failure rather than a
+theoretical concern? If a finding only says "add a test" without a reproduced
+behavioral failure, it is usually `P3` or an unverified risk, not `P2`.
+
 ## Final Review Output
 
 When the user asks for a PR or code review, present confirmed findings first as
@@ -152,7 +197,7 @@ different format:
 
 | Severity | Finding | File | Claim | Repro Setup | Expected | Observed | Failure Signal | Fix |
 |---|---|---|---|---|---|---|---|---|
-| P1/P2/P3 | Short issue title | `path:line` link | What behavior is wrong and why it matters | Safe setup and exact command, API call, app flow, or trace | Correct behavior | Actual behavior | Output, state transition, assertion, or readback proving the issue | Concrete recommended change |
+| P0/P1/P2/P3/P4 | Short issue title | `path:line` link | What behavior is wrong and why it matters | Safe setup and exact command, API call, app flow, or trace | Correct behavior | Actual behavior | Output, state transition, assertion, or readback proving the issue | Concrete recommended change |
 
 Keep each cell concise but complete enough for a reviewer to understand the
 issue without reading hidden notes. If a command or trace is too long for the
