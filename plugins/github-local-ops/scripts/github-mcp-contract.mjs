@@ -626,6 +626,12 @@ if (args[0] === "branch" && args[1] === "--show-current") {
   console.log("feature/review");
   process.exit(0);
 }
+if (effectiveArgs[0] === "for-each-ref" && effectiveArgs.includes("--contains")) {
+  const current = state();
+  const branches = current.containingBranches || (current.detached ? [] : ["feature/review"]);
+  console.log(branches.join("\\n"));
+  process.exit(0);
+}
 if (args[0] === "remote") {
   if (args.length === 1) {
     console.log("origin");
@@ -1093,6 +1099,36 @@ async function main() {
     throw new Error("github_pr_view did not expose detached PR resolution evidence");
   }
 
+  const detachedBranchHead = "ffffffffffffffffffffffffffffffffffffffff";
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: true,
+    head: detachedHead,
+    viewHead: detachedBranchHead,
+    prListMode: "empty",
+    prNumber: 292,
+    containingBranches: ["feature/review"]
+  }), "utf8");
+  const detachedBranchFallback = await request("tools/call", {
+    name: "github_pr_view",
+    arguments: { cwd: pluginRoot, repo: "owner/repo", autoFetch: false }
+  });
+  const detachedBranchFallbackJson = jsonContent(detachedBranchFallback);
+  if (detachedBranchFallbackJson.prIdentity?.strategy !== "detached_containing_branch") {
+    throw new Error("github_pr_view did not fall back to a local branch containing detached HEAD");
+  }
+  if (
+    detachedBranchFallbackJson.prIdentity?.branch !== "feature/review"
+    || detachedBranchFallbackJson.pullRequest?.headRefOid !== detachedBranchHead
+  ) {
+    throw new Error("github_pr_view resolved the wrong containing-branch PR");
+  }
+  if (!detachedBranchFallbackJson.warnings?.some((warning) => warning.includes("stale local checkout"))) {
+    throw new Error("github_pr_view did not warn when detached HEAD is stale against the PR branch");
+  }
+  if (!detachedBranchFallbackJson.resolutionCommands?.some((command) => command.includes("for-each-ref"))) {
+    throw new Error("github_pr_view did not expose local branch fallback evidence");
+  }
+
   fs.writeFileSync(stateFile, JSON.stringify({
     detached: true,
     head: detachedHead,
@@ -1112,7 +1148,8 @@ async function main() {
     detached: true,
     head: detachedHead,
     prListMode: "empty",
-    prNumber: 292
+    prNumber: 292,
+    containingBranches: []
   }), "utf8");
   const missingDetachedPr = await request("tools/call", {
     name: "github_pr_view",

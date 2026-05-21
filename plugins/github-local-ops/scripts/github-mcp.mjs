@@ -227,7 +227,7 @@ const TOOLS = [
       ...autoFetchSchema,
       number: {
         type: ["integer", "string"],
-        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA."
+        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA, then by an unambiguous local PR branch containing HEAD."
       },
       fields: {
         type: "array",
@@ -245,7 +245,7 @@ const TOOLS = [
       ...maxBytesSchema,
       number: {
         type: ["integer", "string"],
-        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA."
+        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA, then by an unambiguous local PR branch containing HEAD."
       },
       patch: {
         type: "boolean",
@@ -283,7 +283,7 @@ const TOOLS = [
       ...autoFetchSchema,
       number: {
         type: ["integer", "string"],
-        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA."
+        description: "PR number, URL, or branch. Defaults to the attached branch PR; detached checkouts resolve by exact local HEAD SHA, then by an unambiguous local PR branch containing HEAD."
       },
       requiredOnly: {
         type: "boolean",
@@ -799,6 +799,7 @@ function inspectGitCheckout(cwd) {
       branch: null,
       detached: null,
       head: null,
+      containingBranches: [],
       worktreeCount: null
     };
   }
@@ -818,7 +819,31 @@ function inspectGitCheckout(cwd) {
     branch: branch.status === 0 ? trimOrNull(branch.stdout) : null,
     detached: branch.status !== 0,
     head: head.status === 0 ? trimOrNull(head.stdout) : null,
+    containingBranches: branch.status !== 0 ? readLocalBranchesContainingHead(root).branches : [],
     worktreeCount
+  };
+}
+
+function readLocalBranchesContainingHead(cwd) {
+  const result = safeRunGit(
+    ["for-each-ref", "--format=%(refname:short)", "--contains", "HEAD", "refs/heads"],
+    { cwd }
+  );
+  if (result.status !== 0) {
+    return {
+      command: result.command,
+      branches: [],
+      error: result.stderr.trim() || result.stdout.trim() || "could not list branches containing HEAD"
+    };
+  }
+  const branches = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return {
+    command: result.command,
+    branches: [...new Set(branches)].sort(),
+    error: null
   };
 }
 
@@ -2559,6 +2584,7 @@ async function githubSetupStatus(input = {}) {
       detached: checkout.detached,
       head: checkout.head,
       worktreeCount: checkout.worktreeCount,
+      containingBranches: checkout.containingBranches,
       origin: origin.status === 0 ? redactGitRemote(origin.stdout) : null
     },
     repositoryTarget: targetRepo,
@@ -2591,6 +2617,7 @@ async function githubCurrentContext(input = {}) {
     branch: checkout.branch,
     detached: checkout.detached,
     head: checkout.head,
+    containingBranches: checkout.containingBranches,
     worktreeCount: checkout.worktreeCount,
     origin: remote.status === 0 ? redactGitRemote(remote.stdout) : null
   };
@@ -2684,6 +2711,77 @@ async function githubPrList(input = {}) {
 
 const PR_IDENTITY_FIELDS = "number,title,state,isDraft,author,baseRefName,headRefName,headRefOid,updatedAt,url";
 
+function resolveDetachedContainingBranchPr({ cwd, repo, checkout, githubAccount, exactLookupCommand }) {
+  const branchLookup = readLocalBranchesContainingHead(checkout.root || cwd);
+  const commands = [exactLookupCommand, branchLookup.command].filter(Boolean);
+  if (branchLookup.error) {
+    return {
+      resolved: null,
+      commands,
+      error: `could not inspect local branches containing HEAD: ${branchLookup.error}`
+    };
+  }
+
+  const matches = [];
+  for (const branch of branchLookup.branches) {
+    const result = safeRunGh(
+      addRepo(["pr", "view", branch, "--json", PR_IDENTITY_FIELDS], repo),
+      { cwd, json: true, githubAccount }
+    );
+    commands.push(result.command);
+    if (result.status === 0 && result.data?.number) {
+      matches.push({
+        branch,
+        result,
+        pullRequest: result.data
+      });
+    }
+  }
+
+  if (matches.length !== 1) {
+    return {
+      resolved: null,
+      commands,
+      error: matches.length === 0
+        ? `no PR matched detached HEAD ${compactSha(checkout.head)} or local branches containing it`
+        : `multiple local branches containing detached HEAD resolve to PRs: ${matches.map((match) => `${match.branch} -> #${match.pullRequest.number}`).join("; ")}`
+    };
+  }
+
+  const match = matches[0];
+  const pullRequest = match.pullRequest;
+  const warnings = [
+    `Detached checkout ${compactSha(checkout.head)} did not match an exact PR head; resolved via local branch ${match.branch} to PR #${pullRequest.number}.`
+  ];
+  if (!shaEquals(checkout.head, pullRequest.headRefOid)) {
+    warnings.push(`Local detached HEAD ${compactSha(checkout.head)} is not the PR head ${compactSha(pullRequest.headRefOid)}; using the GitHub PR branch diff instead of the stale local checkout.`);
+  }
+
+  return {
+    resolved: {
+      selector: match.branch,
+      identity: {
+        strategy: "detached_containing_branch",
+        localHead: checkout.head,
+        worktreeCount: checkout.worktreeCount,
+        branch: match.branch,
+        number: pullRequest.number,
+        title: pullRequest.title || null,
+        state: pullRequest.state || null,
+        baseRefName: pullRequest.baseRefName || null,
+        headRefName: pullRequest.headRefName || null,
+        headRefOid: pullRequest.headRefOid || null,
+        url: pullRequest.url || null
+      },
+      commands,
+      authSelection: match.result.auth,
+      warnings
+    },
+    commands,
+    error: null
+  };
+}
+
 function resolveDefaultPullRequestSelector({ cwd, repo, number, toolName, githubAccount }) {
   if (number != null) {
     return {
@@ -2737,7 +2835,17 @@ function resolveDefaultPullRequestSelector({ cwd, repo, number, toolName, github
   const matches = pullRequests.filter((pr) => shaEquals(checkout.head, pr.headRefOid));
 
   if (matches.length === 0) {
-    throw new Error(`${toolName} is running in a detached checkout at ${compactSha(checkout.head)}, but no PR has that exact head SHA. Pass a PR number, URL, or branch explicitly.`);
+    const fallback = resolveDetachedContainingBranchPr({
+      cwd,
+      repo,
+      checkout,
+      githubAccount,
+      exactLookupCommand: result.command
+    });
+    if (fallback.resolved) {
+      return fallback.resolved;
+    }
+    throw new Error(`${toolName} is running in a detached checkout at ${compactSha(checkout.head)}, but ${fallback.error}. Pass a PR number, URL, or branch explicitly.`);
   }
   if (matches.length > 1) {
     const rendered = matches
