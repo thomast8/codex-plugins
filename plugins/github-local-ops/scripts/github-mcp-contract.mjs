@@ -269,11 +269,56 @@ if (args[0] === "api" && args[1] === "graphql") {
     }));
     process.exit(0);
   }
+  const threadIdArg = args.find((arg) => arg.startsWith("threadId=")) || "";
+  const threadId = threadIdArg.replace(/^threadId=/, "") || "PRRT_human";
+  if (queryArg.includes("resolveReviewThread")) {
+    const current = state();
+    const resolvedThreads = { ...(current.resolvedThreads || {}), [threadId]: true };
+    fs.writeFileSync(process.env.FAKE_STATE_FILE, JSON.stringify({ ...current, resolvedThreads }), "utf8");
+    console.log(JSON.stringify({
+      data: {
+        resolveReviewThread: {
+          thread: {
+            id: threadId,
+            isResolved: true
+          }
+        }
+      }
+    }));
+    process.exit(0);
+  }
+  if (queryArg.includes("node(id: $threadId)")) {
+    const current = state();
+    const isResolved = Boolean((current.resolvedThreads || {})[threadId]);
+    console.log(JSON.stringify({
+      data: {
+        node: {
+          id: threadId,
+          isResolved,
+          isOutdated: false,
+          path: "src/example.js",
+          line: 12,
+          startLine: null,
+          originalLine: 12,
+          originalStartLine: null,
+          subjectType: "LINE",
+          pullRequest: {
+            number: 1,
+            repository: {
+              nameWithOwner: "owner/repo"
+            }
+          }
+        }
+      }
+    }));
+    process.exit(0);
+  }
   const body = fs.existsSync(process.env.FAKE_BODY_FILE)
     ? fs.readFileSync(process.env.FAKE_BODY_FILE, "utf8")
     : "Initial PR body";
   const reviewers = readJsonl(process.env.FAKE_REVIEWER_LOG).flatMap((entry) => entry.reviewers);
   const replies = readJsonl(process.env.FAKE_REPLY_LOG);
+  const resolvedThreads = state().resolvedThreads || {};
   const replyNodes = replies.map((reply, index) => ({
     id: "PRRC_reply_" + index,
     databaseId: 9000 + index,
@@ -315,7 +360,7 @@ if (args[0] === "api" && args[1] === "graphql") {
             nodes: [
               {
                 id: "PRRT_human",
-                isResolved: false,
+                isResolved: Boolean(resolvedThreads.PRRT_human),
                 isOutdated: false,
                 path: "src/example.js",
                 line: 12,
@@ -953,6 +998,9 @@ async function main() {
   if (!mutationPreviewTool?.inputSchema?.properties?.operation?.enum?.includes("pr_create_draft")) {
     throw new Error("github_mutation_preview schema did not expose pr_create_draft");
   }
+  if (!mutationPreviewTool?.inputSchema?.properties?.operation?.enum?.includes("review_thread_resolve")) {
+    throw new Error("github_mutation_preview schema did not expose review_thread_resolve");
+  }
 
   const status = await request("tools/call", {
     name: "github_setup_status",
@@ -1400,6 +1448,85 @@ async function main() {
   if (reviewThreadsJson.authSelection?.account !== "owner" || reviewThreadApiCalls.some((call) => call.tokenAccount !== "owner")) {
     throw new Error("github_pr_review_threads did not preserve explicit githubAccount for GraphQL reads");
   }
+
+  const callsBeforeResolvePreview = readCommandLog().length;
+  const resolvePreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "review_thread_resolve",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        threadId: "PRRT_human"
+      }
+    }
+  });
+  const resolvePreviewJson = jsonContent(resolvePreview);
+  if (
+    resolvePreviewJson.operation !== "review_thread_resolve"
+    || resolvePreviewJson.request?.mutation !== "resolveReviewThread"
+    || resolvePreviewJson.requestBody?.repo !== "owner/repo"
+    || resolvePreviewJson.requestBody?.number !== 1
+    || resolvePreviewJson.requestBody?.threadId !== "PRRT_human"
+    || !resolvePreviewJson.command?.args?.includes("threadId=PRRT_human")
+    || !resolvePreviewJson.command?.args?.some((arg) => String(arg).includes("resolveReviewThread"))
+  ) {
+    throw new Error("review_thread_resolve preview did not expose the expected GraphQL mutation");
+  }
+  if (readCommandLog().length !== callsBeforeResolvePreview) {
+    throw new Error("review_thread_resolve preview should not invoke gh or git");
+  }
+  const callsBeforeResolveExecute = readCommandLog().length;
+  const resolveExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: { approvalToken: resolvePreviewJson.approvalToken }
+  });
+  const resolveExecuteJson = jsonContent(resolveExecute);
+  const resolveApiCalls = readCommandLog()
+    .slice(callsBeforeResolveExecute)
+    .filter((call) => call.bin === "gh" && call.args[0] === "api" && call.args[1] === "graphql");
+  if (
+    resolveExecuteJson.operation !== "review_thread_resolve"
+    || resolveExecuteJson.readbackVerified !== true
+    || resolveExecuteJson.readback?.isResolved !== true
+    || resolveExecuteJson.readback?.repositoryMatches !== true
+    || resolveExecuteJson.readback?.numberMatches !== true
+    || resolveExecuteJson.readback?.resolvedMatches !== true
+    || resolveApiCalls.length < 3
+    || resolveApiCalls.some((call) => call.tokenAccount !== "owner")
+  ) {
+    throw new Error("review_thread_resolve execution did not resolve and read back the thread with command-scoped owner identity");
+  }
+
+  const mismatchedResolvePreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "review_thread_resolve",
+      payload: {
+        repo: "owner/other",
+        number: 1,
+        threadId: "PRRT_human"
+      }
+    }
+  });
+  const callsBeforeMismatchedResolveExecute = readCommandLog().length;
+  const mismatchedResolveExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: { approvalToken: jsonContent(mismatchedResolvePreview).approvalToken }
+  });
+  const mismatchedResolveCalls = readCommandLog()
+    .slice(callsBeforeMismatchedResolveExecute)
+    .filter((call) => call.bin === "gh" && call.args[0] === "api" && call.args[1] === "graphql");
+  if (
+    mismatchedResolveExecute.result?.isError !== true
+    || !textContent(mismatchedResolveExecute).includes("Refusing to resolve review thread")
+    || mismatchedResolveCalls.some((call) => call.args.some((arg) => String(arg).includes("resolveReviewThread")))
+  ) {
+    throw new Error("review_thread_resolve must fail before mutation when the thread does not belong to the previewed repo and PR");
+  }
+  const stateAfterResolve = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  delete stateAfterResolve.resolvedThreads;
+  fs.writeFileSync(stateFile, JSON.stringify(stateAfterResolve), "utf8");
   const callsBeforeMutationPreview = readCommandLog().length;
 
   const preview = await request("tools/call", {

@@ -21,6 +21,7 @@ Use this skill when the user asks to address PR review comments, reply to review
 10. Use `github_review_handoff_preview` for approved replies, PR body update, and reviewer re-request. Echo the preview and wait for explicit approval.
 11. After approval, call `github_mutation_execute` only if the preview reports `executableByTool: true`. The MCP posts replies, reads them back, updates the PR body, re-checks CI, then requests reviewers.
 12. Run `github_pr_handoff_status` again before saying handoff is done.
+13. If the user explicitly approves resolving a review thread that should be resolved by the current actor, use `github_mutation_preview` with operation `review_thread_resolve` and payload `repo`, `number`, and GraphQL `threadId`, then execute after approval and report `readbackVerified`, `readback.repositoryMatches`, `readback.numberMatches`, and `readback.isResolved`.
 
 ## Ledger Shape
 

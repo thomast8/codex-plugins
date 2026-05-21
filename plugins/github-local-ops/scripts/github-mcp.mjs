@@ -22,6 +22,23 @@ const PUBLIC_WRITES_ENABLED = publicWritesEnabled();
 const DEFAULT_LIMIT = 30;
 const DEFAULT_MAX_BYTES = 200000;
 const GITHUB_TOKEN_ENV_KEYS = ["GH_TOKEN", "GITHUB_TOKEN"];
+const REVIEW_THREAD_RESOLVE_MUTATION = [
+  "mutation($threadId: ID!) {",
+  "resolveReviewThread(input: { threadId: $threadId }) {",
+  "thread { id isResolved }",
+  "}",
+  "}"
+].join(" ");
+const REVIEW_THREAD_READBACK_QUERY = [
+  "query($threadId: ID!) {",
+  "node(id: $threadId) {",
+  "... on PullRequestReviewThread {",
+  "id isResolved isOutdated path line startLine originalLine originalStartLine subjectType",
+  "pullRequest { number repository { nameWithOwner } }",
+  "}",
+  "}",
+  "}"
+].join(" ");
 const approvals = new Map();
 const fetchCache = new Map();
 const ghAccountTokenCache = new Map();
@@ -481,6 +498,7 @@ const TOOLS = [
           "pull_request_review_comment",
           "pull_request_review_comment_edit",
           "review_thread_reply",
+          "review_thread_resolve",
           "pr_edit",
           "request_reviewers",
           "issue_comment",
@@ -4811,6 +4829,40 @@ function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccou
         riskNotes: [...riskNotes]
       };
     }
+    case "review_thread_resolve": {
+      if (!repo) {
+        throw new Error("payload.repo is required for review_thread_resolve");
+      }
+      const number = requirePositiveInteger(payload.number, "payload.number");
+      const threadId = requireNonOptionString(payload.threadId ?? payload.thread_id, "payload.threadId");
+      riskNotes.push("Resolves a pull request review thread through GraphQL.");
+      riskNotes.push("Only resolve threads when the workflow owner is allowed to resolve them.");
+      return {
+        kind: "gh",
+        bin: GH_BIN,
+        args: [
+          "api",
+          "graphql",
+          "--raw-field",
+          `query=${REVIEW_THREAD_RESOLVE_MUTATION}`,
+          "--raw-field",
+          `threadId=${threadId}`
+        ],
+        cwd,
+        repo,
+        githubAccount: account,
+        number,
+        threadId,
+        expectedResolved: true,
+        request: {
+          method: "POST",
+          endpoint: "graphql",
+          mutation: "resolveReviewThread"
+        },
+        requestBody: { repo, number: Number(number), threadId },
+        riskNotes: [...riskNotes]
+      };
+    }
     case "pr_edit": {
       const number = requirePositiveInteger(payload.number, "payload.number");
       const args = ["pr", "edit", number];
@@ -5527,6 +5579,161 @@ async function executePullRequestReviewPlan(plan, input = {}) {
   };
 }
 
+function reviewThreadResolutionReadbackEvidence(plan, thread) {
+  const isResolved = thread?.isResolved ?? null;
+  const repository = thread?.pullRequest?.repository?.nameWithOwner || null;
+  const number = thread?.pullRequest?.number ?? null;
+  return {
+    threadId: thread?.id || null,
+    expectedThreadId: plan.threadId,
+    repository,
+    expectedRepository: plan.repo,
+    number,
+    expectedNumber: Number(plan.number),
+    expectedResolved: plan.expectedResolved,
+    isResolved,
+    threadMatches: thread?.id === plan.threadId,
+    repositoryMatches: repository === plan.repo,
+    numberMatches: Number(number) === Number(plan.number),
+    resolvedMatches: isResolved === plan.expectedResolved,
+    exactMatch: (
+      thread?.id === plan.threadId
+      && repository === plan.repo
+      && Number(number) === Number(plan.number)
+      && isResolved === plan.expectedResolved
+    ),
+    path: thread?.path || null,
+    line: thread?.line ?? null,
+    isOutdated: thread?.isOutdated ?? null
+  };
+}
+
+function runReviewThreadReadback(plan) {
+  return runGh(
+    [
+      "api",
+      "graphql",
+      "--raw-field",
+      `query=${REVIEW_THREAD_READBACK_QUERY}`,
+      "--raw-field",
+      `threadId=${plan.threadId}`
+    ],
+    {
+      cwd: plan.cwd,
+      maxBuffer: 20 * 1024 * 1024,
+      repoName: plan.repo,
+      githubAccount: plan.githubAccount,
+      requireScopedAuth: true,
+      json: true
+    }
+  );
+}
+
+function requireReviewThreadTarget(plan, thread) {
+  const evidence = reviewThreadResolutionReadbackEvidence(plan, thread);
+  if (!evidence.threadMatches || !evidence.repositoryMatches || !evidence.numberMatches) {
+    throw new Error(
+      `Refusing to resolve review thread ${plan.threadId}: expected ${plan.repo}#${plan.number}, read back ${evidence.repository || "unknown"}#${evidence.number ?? "unknown"}.`
+    );
+  }
+  return evidence;
+}
+
+async function executeReviewThreadResolvePlan(plan, input = {}) {
+  const beforeReadbackResult = runReviewThreadReadback(plan);
+  const targetReadback = requireReviewThreadTarget(plan, beforeReadbackResult.data?.data?.node || null);
+
+  const result = runGh(plan.args, {
+    cwd: plan.cwd,
+    maxBuffer: 20 * 1024 * 1024,
+    repoName: plan.repo,
+    githubAccount: plan.githubAccount,
+    requireScopedAuth: true,
+    json: true
+  });
+  const mutationThread = result.data?.data?.resolveReviewThread?.thread || null;
+  let readbackResult;
+  try {
+    readbackResult = runReviewThreadReadback(plan);
+  } catch (error) {
+    return {
+      operation: "review_thread_resolve",
+      repository: plan.repo,
+      command: {
+        executable: plan.bin,
+        args: plan.args,
+        cwd: plan.cwd,
+        shellPreview: commandPreview([plan.bin, ...plan.args])
+      },
+      request: plan.request,
+      requestBody: plan.requestBody,
+      writeSucceeded: true,
+      mutationThread,
+      targetReadback,
+      targetReadbackCommand: {
+        executable: GH_BIN,
+        args: beforeReadbackResult.command.slice(1),
+        cwd: beforeReadbackResult.cwd,
+        shellPreview: commandPreview(beforeReadbackResult.command)
+      },
+      readbackVerified: false,
+      readbackError: {
+        message: error instanceof Error ? error.message : String(error),
+        command: error?.command || null,
+        stdout: truncate(error?.stdout || "", input.maxBytes || DEFAULT_MAX_BYTES),
+        stderr: truncate(error?.stderr || "", input.maxBytes || DEFAULT_MAX_BYTES),
+        status: error?.status ?? null
+      },
+      authSelection: result.auth || null,
+      stdout: truncate(result.stdout, input.maxBytes || DEFAULT_MAX_BYTES),
+      stderr: truncate(result.stderr, input.maxBytes || DEFAULT_MAX_BYTES),
+      status: result.status,
+      warnings: [
+        "The review thread resolve mutation succeeded, but readback failed. Do not retry blindly because retrying may mask the current thread state."
+      ]
+    };
+  }
+  const readbackThread = readbackResult.data?.data?.node || null;
+  const readback = reviewThreadResolutionReadbackEvidence(plan, readbackThread);
+  const readbackVerified = readback.exactMatch;
+  return {
+    operation: "review_thread_resolve",
+    repository: plan.repo,
+    command: {
+      executable: plan.bin,
+      args: plan.args,
+      cwd: plan.cwd,
+      shellPreview: commandPreview([plan.bin, ...plan.args])
+    },
+    request: plan.request,
+    requestBody: plan.requestBody,
+    writeSucceeded: true,
+    mutationThread,
+    targetReadback,
+    targetReadbackCommand: {
+      executable: GH_BIN,
+      args: beforeReadbackResult.command.slice(1),
+      cwd: beforeReadbackResult.cwd,
+      shellPreview: commandPreview(beforeReadbackResult.command)
+    },
+    readback,
+    readbackVerified,
+    readbackCommand: {
+      executable: GH_BIN,
+      args: readbackResult.command.slice(1),
+      cwd: readbackResult.cwd,
+      shellPreview: commandPreview(readbackResult.command)
+    },
+    authSelection: result.auth || null,
+    stdout: truncate(result.stdout, input.maxBytes || DEFAULT_MAX_BYTES),
+    stderr: truncate(result.stderr, input.maxBytes || DEFAULT_MAX_BYTES),
+    status: result.status,
+    warnings: readbackVerified
+      ? []
+      : ["The review thread resolve mutation could not be verified exactly in readback. Inspect the returned evidence before taking follow-up action."]
+  };
+}
+
 async function githubMutationExecute(input = {}) {
   cleanupApprovals();
   const token = requireString(input.approvalToken, "approvalToken");
@@ -5548,6 +5755,9 @@ async function githubMutationExecute(input = {}) {
   }
   if (approval.operation === "pull_request_review") {
     return executePullRequestReviewPlan(approval.plan, input);
+  }
+  if (approval.operation === "review_thread_resolve") {
+    return executeReviewThreadResolvePlan(approval.plan, input);
   }
   const result = approval.plan.kind === "gh"
     ? runGh(approval.plan.args, {
@@ -5726,6 +5936,29 @@ async function runSelfTest() {
       }
     ]
   }));
+  const reviewThreadResolveInvalidRejected = await expectReject(() => githubMutationPreview({
+    operation: "review_thread_resolve",
+    payload: {
+      repo: "owner/repo",
+      number: 1,
+      threadId: "--raw-field=bad"
+    }
+  }));
+  const reviewThreadResolveMissingNumberRejected = await expectReject(() => githubMutationPreview({
+    operation: "review_thread_resolve",
+    payload: {
+      repo: "owner/repo",
+      threadId: "PRRT_selftest"
+    }
+  }));
+  const reviewThreadResolvePreview = await githubMutationPreview({
+    operation: "review_thread_resolve",
+    payload: {
+      repo: "owner/repo",
+      number: 1,
+      threadId: "PRRT_selftest"
+    }
+  });
   const rebasePlan = await githubPrRebasePlan({
     checkStaleness: false,
     pullRequests: [
@@ -5782,6 +6015,11 @@ async function runSelfTest() {
       && optionWorkflowRejected.ok
       && optionReleaseRejected.ok
       && handoffInvalidReplyRejected.ok
+      && reviewThreadResolveInvalidRejected.ok
+      && reviewThreadResolveMissingNumberRejected.ok
+      && reviewThreadResolvePreview.request?.mutation === "resolveReviewThread"
+      && reviewThreadResolvePreview.requestBody.number === 1
+      && reviewThreadResolvePreview.command.args.includes("threadId=PRRT_selftest")
       && rebasePlan.orderedPullRequests.map((pr) => pr.number).join(",") === "1,2"
       && releasePreview.command.args.includes("--draft"),
     server: initialize.result.serverInfo,
@@ -5795,6 +6033,8 @@ async function runSelfTest() {
       optionWorkflowRejected,
       optionReleaseRejected,
       handoffInvalidReplyRejected,
+      reviewThreadResolveInvalidRejected,
+      reviewThreadResolveMissingNumberRejected,
       rebasePlanOrdersParentFirst: rebasePlan.orderedPullRequests.map((pr) => pr.number),
       releaseDefaultsToDraft: releasePreview.command.args.includes("--draft"),
       missingTokenRejected: noToken,
