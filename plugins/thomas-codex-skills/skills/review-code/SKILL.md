@@ -161,25 +161,40 @@ because an executable is missing, dependency extras are not selected, caches are
 blocked, or the worktree is detached/fresh, identify the canonical wrapper and
 use that in review prompts.
 
+When a reviewed manual path depends on setup, the coordinator should try to
+make that setup available before marking the path blocked. Use the smallest
+safe, repo-owned setup that matches the claim being reviewed: start local
+services, run checked-in provisioning or migration commands, install or sync
+dependencies, seed local fixtures, create temporary state, or select a documented
+dry-run or fake-target mode. If the needed setup requires approval, request it
+from the coordinator/parent loop with a narrow command prefix when appropriate.
+Only mark a verification path blocked after safe setup has been attempted or the
+remaining setup is unsafe, destructive, credential-gated, externally
+unavailable, or approval-gated.
+
 ## PR Body Manual Verification
 
 For every PR review, read the PR description/body through the provider before
 the final review. If it contains manual verification, test plan, smoke test, or
 reviewer-runnable steps, extract those steps and run through them when the
-setup is available and safe. This includes checkbox items, numbered steps,
-code-fenced commands, endpoint calls, UI flows, database checks, and described
-manual app behavior.
+setup is available or can be made available safely. This includes checkbox
+items, numbered steps, code-fenced commands, endpoint calls, UI flows, database
+checks, and described manual app behavior.
 
 Treat PR-body manual steps as claims made by the PR author:
 
 - Identify what each step is trying to prove.
 - Run the exact command or flow as written when practical.
-- If a step needs light setup, perform the setup when it is safe and scoped.
+- If a step needs setup, perform the smallest safe setup that the repository
+  provides or request approval for that setup from the parent loop. Do not mark
+  the step blocked just because a local service, dependency, fixture, database,
+  or generated artifact is missing.
 - If a step is ambiguous, rewrite the smallest reviewer-runnable interpretation
   and say what assumption was made.
 - If a step is unsafe, destructive, credential-gated, service-gated, or
-  impossible in the current environment, do not fake it. Mark it blocked and
-  explain the missing dependency or safety boundary.
+  impossible in the current environment after safe setup attempts, do not fake
+  it. Mark it blocked and explain the missing dependency, unsafe setup, denied
+  approval, or safety boundary.
 - If a step fails because the PR instructions are wrong, treat that as review
   evidence. Calibrate severity by whether it blocks reviewers from validating
   the PR's advertised behavior or reveals a product bug.
@@ -444,7 +459,7 @@ the default agent type and keep the same prompt text.
 **Lane F - PR body manual verification, optional when applicable:**
 ```
 spawn_agent(
-  message: "Review <self-contained intent + repo path + diff scope + PR body manual verification excerpt + Known Verification Evidence>. Lens: PR body manual verification only - extract each manual/test-plan step from the PR description, run the exact step when safe and available, and explain what each step proves. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied setup and verification as authoritative. If a step needs unavailable credentials, services, destructive actions, or approval, mark it blocked with the exact missing dependency and closest safe evidence. Return a step-by-step ledger with: step label, claim proved, exact command/API/app flow/trace, observed output or state, status, and any failure signal. Do not report code-review findings except when a manual step failure proves a concrete bug or broken PR instruction."
+  message: "Review <self-contained intent + repo path + diff scope + PR body manual verification excerpt + Known Verification Evidence>. Lens: PR body manual verification only - extract each manual/test-plan step from the PR description, run the exact step when safe and available or after the smallest safe repo-owned setup, and explain what each step proves. Do not run git fetch, git pull, gt sync, or any network git operation. Do not request sandbox escalation or approval prompts. Treat parent-supplied setup and verification as authoritative. If a local service, dependency, fixture, database, generated artifact, or temp state is missing, first try the smallest sandbox-safe setup. If setup needs unavailable credentials, unsafe/destructive actions, external services, or approval, mark it blocked with the exact missing dependency or blocked setup command and closest safe evidence. Return a step-by-step ledger with: step label, claim proved, exact command/API/app flow/trace, observed output or state, status, and any failure signal. Do not report code-review findings except when a manual step failure proves a concrete bug or broken PR instruction."
 )
 ```
 
