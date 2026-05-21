@@ -8,7 +8,7 @@ This inventory describes what belongs in this public marketplace repo and what r
 
 - Marketplace repo: `thomast8/codex-plugins`
 - Marketplace entrypoint: `.agents/plugins/marketplace.json`
-- Install script: `scripts/install-local.mjs`
+- Install and refresh path: Codex marketplace installation for `codex-plugins`
 
 ## Personal Plugins
 
@@ -22,7 +22,7 @@ Each plugin also carries `plugin.descriptor.json`, a public-safe explanatory man
 
 ## Personal Skills
 
-These are installed through the `thomas-codex-skills` plugin and executed from Codex's plugin cache after marketplace refresh. The top-level `skills/` tree is retained as the editable source mirror for the plugin package; standalone top-level skill installation is opt-in only.
+These are installed through the `thomas-codex-skills` plugin and executed from Codex's plugin cache after marketplace refresh. The canonical active skill source lives under `plugins/thomas-codex-skills/skills/`.
 
 - `find-reviewer`
 - `frontend-design`
@@ -38,13 +38,6 @@ These are installed through the `thomas-codex-skills` plugin and executed from C
 - `worktree`
 
 Archived skills are kept under `archived-skills/` for recovery only and are not installed by default.
-
-## Safe MCP Declarations
-
-The bootstrap installer can upsert these global MCP server declarations:
-
-- `gitnexus`: `gitnexus mcp`
-- `mcp-debugger`: `npx -y @debugmcp/mcp-debugger`
 
 ## Official Or External Marketplaces
 
@@ -71,7 +64,6 @@ Do not publish or vendor:
 1. Clone `https://github.com/thomast8/codex-plugins`.
 2. Run `npm install`.
 3. Run `npm run build`.
-4. Run `node scripts/install-local.mjs`.
-5. Refresh or reinstall the `codex-plugins` marketplace through Codex, then restart or reload Codex if needed.
+4. Refresh or reinstall the `codex-plugins` marketplace through Codex, then restart or reload Codex if needed.
 
-Use the Codex marketplace UI to install `Thomas Codex Skills`. Use `CODEX_CONFIG_FILE`, `CODEX_CONFIG_ROOT`, `CODEX_PLUGINS`, `CODEX_MCPS`, and `CODEX_INSTALL_SKILLS=true` for dry runs, partial installs, or explicit standalone skill linking.
+Use the Codex marketplace UI or plugin tooling to install `Thomas Codex Skills`. Standalone skill linking is no longer supported.

@@ -3,12 +3,11 @@
   "name": "thomas-codex-skills",
   "displayName": "Thomas Codex Skills",
   "summary": "Personal Codex skills packaged as one marketplace plugin for worktrees, reviews, reconciliation, debugging, frontend design, and GitNexus workflows.",
-  "purpose": "Use this plugin when a fresh Codex install should acquire Thomas's active reusable skills from the marketplace UI instead of relying only on top-level skill symlinks.",
+  "purpose": "Use this plugin when a fresh Codex install should acquire Thomas's active reusable skills from the marketplace UI.",
   "whenToUse": [
     "Install personal skills from the marketplace UI as plugin-marked skills.",
     "Recover active skills on a new machine from the public codex-plugins repo.",
-    "Use worktree, unworktree, reconcile, review-code, find-reviewer, review-thread-response, frontend-design, systematic-debugging, or GitNexus skills.",
-    "Keep the same skill content available as both plugin-packaged and top-level installs."
+    "Use worktree, unworktree, reconcile, review-code, find-reviewer, review-thread-response, frontend-design, systematic-debugging, or GitNexus skills."
   ],
   "surfaces": {
     "skills": [
@@ -41,8 +40,8 @@
     ]
   },
   "installNotes": [
-    "The plugin skill mirror is verified against the repo-level skills directory.",
-    "The bootstrap installer still links these same skills as top-level names.",
+    "Active skills are sourced directly from plugins/thomas-codex-skills/skills.",
+    "Standalone top-level skill linking is no longer supported.",
     "Archived skills remain outside this plugin and are not installed by default."
   ]
 }

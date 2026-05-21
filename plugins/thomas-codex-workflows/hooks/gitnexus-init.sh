@@ -9,13 +9,27 @@ if ! git rev-parse --is-inside-work-tree &>/dev/null; then
   exit 0
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null)
 GIT_DIR=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)
 COMMON_DIR=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 
+find_worktree_helper() {
+  local candidate
+  for candidate in \
+    "$SCRIPT_DIR/../../thomas-codex-skills/skills/worktree/scripts/gitnexus-worktree-index.mjs" \
+    "$SCRIPT_DIR/../../../thomas-codex-skills"/*/skills/worktree/scripts/gitnexus-worktree-index.mjs; do
+    if [ -f "$candidate" ]; then
+      printf '%s/%s\n' "$(cd "$(dirname "$candidate")" && pwd -P)" "$(basename "$candidate")"
+      return 0
+    fi
+  done
+  return 1
+}
+
 if [ -n "$GIT_DIR" ] && [ -n "$COMMON_DIR" ] && [ "$GIT_DIR" != "$COMMON_DIR" ]; then
-  HELPER="${HOME}/.Codex/skills/worktree/scripts/gitnexus-worktree-index.mjs"
+  HELPER=$(find_worktree_helper || true)
   if command -v node >/dev/null 2>&1 && [ -f "$HELPER" ]; then
     MSG=$(node "$HELPER" --repo "$REPO_ROOT" 2>/dev/null || true)
     [ -n "$MSG" ] && echo "GitNexus: $MSG"

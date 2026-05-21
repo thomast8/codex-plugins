@@ -7,7 +7,7 @@ description: "Move a worktree's branch into the main checkout so you can test it
 
 Sibling to `/worktree`. Takes the branch currently checked out in a worktree and moves it into the **main repo checkout** so the user can test it there. The worktree gets removed as a side-effect - git refuses to have the same branch checked out in two places, so the worktree has to go before the branch can be checked out in main.
 
-This skill is a thin coordinator around two shell scripts. **Do not re-implement their logic in inline bash** - call them and react to their exit codes. The scripts live in `~/.Codex/skills/worktree/scripts/`.
+This skill is a thin coordinator around two shell scripts. **Do not re-implement their logic in inline bash** - call them and react to their exit codes. The scripts live in the `worktree` skill's `scripts/` directory; resolve `<worktree_skill_dir>` from the installed plugin copy.
 
 - `list.sh [arg]` - one call. Enumerates every worktree except main, enriches each with dirty state + last-mod + merged flag, optionally resolves `arg` to a specific entry. Returns JSON.
 - `reclaim.sh <wt_path> <branch> <main_root> [--stash-main] [--stash-wt]` - one call. Optionally stashes the worktree (from inside it) and/or main, removes the worktree, checks out the branch in main, pops the stash(es). Prints a hint block on success.
@@ -19,7 +19,7 @@ This skill is a thin coordinator around two shell scripts. **Do not re-implement
 ### 1. List + default resolution
 
 ```bash
-~/.Codex/skills/worktree/scripts/list.sh "${ARG:-}"
+<worktree_skill_dir>/scripts/list.sh "${ARG:-}"
 ```
 
 Parse the JSON. Fields you care about:
@@ -92,7 +92,7 @@ cd "$MAIN_ROOT"
 Then invoke - **always pass `--stash-wt` by default**. Dirty worktrees are the common case (the user is mid-work and wants to test it in main), so auto-stashing the worktree into main is the expected behavior. The stash survives `git worktree remove` (refs/stash is shared) and the script pops it back onto the checked-out branch in main.
 
 ```bash
-~/.Codex/skills/worktree/scripts/reclaim.sh <wt_path> <branch> <main_root> --stash-wt
+<worktree_skill_dir>/scripts/reclaim.sh <wt_path> <branch> <main_root> --stash-wt
 ```
 
 Read the exit code:

@@ -4,7 +4,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const skillsRoot = path.join(repoRoot, "skills");
 const archivedSkillsRoot = path.join(repoRoot, "archived-skills");
 const pluginSkillsRoot = path.join(
   repoRoot,
@@ -82,37 +81,14 @@ function relativeSkillFiles(root, { skipHiddenRootDirs = false } = {}) {
   return files.sort();
 }
 
-function verifyPluginSkillMirror() {
+function verifyPluginSkillsRoot() {
   if (!fs.existsSync(pluginSkillsRoot)) {
     fail("plugins/thomas-codex-skills/skills is missing.");
-    return;
   }
-
-  const sourceFiles = relativeSkillFiles(skillsRoot, { skipHiddenRootDirs: true });
-  const mirrorFiles = relativeSkillFiles(pluginSkillsRoot);
-  const sourceSet = new Set(sourceFiles);
-  const mirrorSet = new Set(mirrorFiles);
-
-  for (const filePath of sourceFiles) {
-    if (!mirrorSet.has(filePath)) {
-      fail(`plugins/thomas-codex-skills/skills is missing ${filePath}.`);
-      continue;
-    }
-    const source = fs.readFileSync(path.join(skillsRoot, filePath));
-    const mirror = fs.readFileSync(path.join(pluginSkillsRoot, filePath));
-    if (!source.equals(mirror)) {
-      fail(`plugins/thomas-codex-skills/skills/${filePath} differs from skills/${filePath}.`);
-    }
-  }
-
-  for (const filePath of mirrorFiles) {
-    if (!sourceSet.has(filePath)) {
-      fail(`plugins/thomas-codex-skills/skills contains extra file ${filePath}.`);
-    }
-  }
+  relativeSkillFiles(pluginSkillsRoot);
 }
 
-const activeSkills = skillDirs(skillsRoot);
+const activeSkills = skillDirs(pluginSkillsRoot);
 const archivedSkills = skillDirs(archivedSkillsRoot, { includeArchived: true });
 
 for (const skill of [...activeSkills, ...archivedSkills]) {
@@ -135,15 +111,15 @@ for (const skill of [...activeSkills, ...archivedSkills]) {
 }
 
 if (activeSkills.length === 0) {
-  fail("No active skills found under skills/.");
+  fail("No active skills found under plugins/thomas-codex-skills/skills/.");
 }
 
-verifyPluginSkillMirror();
+verifyPluginSkillsRoot();
 
 if (process.exitCode) {
   process.exit(process.exitCode);
 }
 
 console.log(
-  `Verified ${activeSkills.length} active skills, ${archivedSkills.length} archived skills, and the Thomas Codex Skills plugin mirror.`
+  `Verified ${activeSkills.length} active plugin skills and ${archivedSkills.length} archived skills.`
 );

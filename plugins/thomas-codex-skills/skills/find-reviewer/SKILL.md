@@ -7,7 +7,10 @@ description: "Rank a repo's active contributors by their current capacity to rev
 
 Picks the best reviewer for a PR by combining **current load** (open review requests, authored PRs in flight, assigned issues, org-wide), **recent activity** (are they actually around?), and - when a target PR is known - **domain familiarity** (have they touched the changed files?).
 
-This skill is a thin coordinator around two shell scripts in `~/.Codex/skills/find-reviewer/scripts/`. **Do not re-implement their logic in inline bash.** Call them and turn their JSON into a ranked table.
+This skill is a thin coordinator around two shell scripts in this skill's
+`scripts/` directory. Resolve that path relative to this `SKILL.md` in the
+installed plugin copy. **Do not re-implement their logic in inline bash.** Call
+them and turn their JSON into a ranked table.
 
 - `gather.sh [arg]` - one call. Resolves the target, builds the candidate list, fans out per-candidate provider queries in parallel, and in PR mode pre-fetches the per-file author cache server-side. Emits one JSON blob.
 - `familiarity.sh <login> <authors_cache>` - called internally by `gather.sh` once per candidate in PR mode. Pure jq computation over the pre-built cache; no provider calls. You normally don't call it yourself.
@@ -29,7 +32,7 @@ This skill is a thin coordinator around two shell scripts in `~/.Codex/skills/fi
 ### 1. Gather
 
 ```bash
-~/.Codex/skills/find-reviewer/scripts/gather.sh "${ARG:-}"
+<find_reviewer_skill_dir>/scripts/gather.sh "${ARG:-}"
 ```
 
 `ARG` forms:

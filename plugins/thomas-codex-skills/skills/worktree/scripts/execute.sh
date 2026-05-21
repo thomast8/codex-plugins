@@ -23,6 +23,7 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 MODE="${1:-}"
 BRANCH="${2:-}"
 ORIG_ROOT="${3:-}"
@@ -161,7 +162,7 @@ case "$MODE" in
 
     # Ensure GitNexus has the cheapest usable state for this worktree.
     GITNEXUS_MSG="not run"
-    HELPER="${HOME}/.Codex/skills/worktree/scripts/gitnexus-worktree-index.mjs"
+    HELPER="$SCRIPT_DIR/gitnexus-worktree-index.mjs"
     if command -v node >/dev/null 2>&1 && [ -f "$HELPER" ]; then
       GITNEXUS_MSG="$(node "$HELPER" --repo "$WT_PATH" --source "$ORIG_ROOT" 2>/dev/null || true)"
       [ -n "$GITNEXUS_MSG" ] || GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"

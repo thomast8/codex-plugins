@@ -20,7 +20,7 @@ Accepts an optional argument matching the `/worktree` convention:
 Call the shared gather script - it fetches, detects Graphite, and resolves the optional arg in one pass:
 
 ```bash
-~/.Codex/skills/worktree/scripts/gather.sh "${ARG:-}"
+<worktree_skill_dir>/scripts/gather.sh "${ARG:-}"
 ```
 
 Parse the JSON. Fields you care about:

@@ -34,10 +34,6 @@ plugins/
     .codex-plugin/plugin.json
     plugin.descriptor.json
     skills/
-skills/
-  review-code/
-  worktree/
-  ...
 archived-skills/
 docs/codex-surface-inventory.md
 ```
@@ -63,11 +59,11 @@ Each plugin includes `plugin.descriptor.json`, a public-safe explanatory manifes
 
 ## Personal Skills
 
-Active personal skills are packaged in `plugins/thomas-codex-skills`, which Codex installs from the marketplace UI or local marketplace source. The top-level `skills/` tree is retained as the editable source mirror for the plugin package, but standalone top-level skill installation is opt-in only.
+Active personal skills are packaged directly in `plugins/thomas-codex-skills`, which Codex installs from the marketplace UI or local marketplace source. That plugin path is the canonical source for active skills.
 
-Archived skills live under `archived-skills/` for recovery and are not installed by default. `npm run verify:skills` checks that the plugin-marked skill copy stays in sync with `skills/`.
+Archived skills live under `archived-skills/` for recovery and are not installed by default. `npm run verify:skills` checks the active plugin skills and archived skill metadata.
 
-See `docs/codex-surface-inventory.md` for the public-safe inventory of bundled plugins, active skills, safe MCP declarations, and intentionally excluded local state.
+See `docs/codex-surface-inventory.md` for the public-safe inventory of bundled plugins, active skills, and intentionally excluded local state.
 
 ## Azure DevOps Plugin
 
@@ -149,33 +145,19 @@ Unauthenticated users are sent straight to Microsoft sign-in. When deployment
 workspace defaults are set, authenticated users can use tools immediately.
 The configuration page is only needed to review or override those defaults.
 
-## Local Development Fallback
+## Local Marketplace Development
 
 The stdio MCP server is the default local development path. `plugins/azure-devops/.mcp.local.json` mirrors the default manifest and can be used when you want an explicit local fallback reference. The build creates `dist/index.bundle.js` so the cached local plugin can run without workspace-level `node_modules`.
 
-To register this repo as the local Codex plugin source, run:
+To test or refresh this marketplace locally, build the plugin packages, publish the repo state you want Codex to install, then refresh the configured `codex-plugins` marketplace in Codex:
 
 ```bash
 npm install
 npm run build
-node scripts/install-local.mjs
+codex plugin marketplace upgrade codex-plugins
 ```
 
-The installer links every plugin listed in `.agents/plugins/marketplace.json` into a local `codex-plugins` marketplace root, enables each `<plugin>@codex-plugins` entry, upserts safe MCP declarations, and disables matching stale standalone entries from older marketplace names if they exist.
-It updates `~/.Codex/config.toml`, writes a timestamped `0600` backup next to that file before changing it, and defaults the local marketplace source to `~/.Codex/marketplaces/codex-plugins`.
-
-For isolated tests, current-machine installs, or partial installs, override the defaults:
-
-- `CODEX_CONFIG_FILE`: config file to edit, defaults to `~/.Codex/config.toml`.
-- `CODEX_CONFIG_ROOT`: marketplace root to populate, defaults to `~/.Codex/marketplaces/codex-plugins`.
-- `CODEX_SKILLS_ROOT`: skills root to populate when standalone skill linking is explicitly enabled, defaults to `~/.Codex/skills`.
-- `CODEX_PLUGINS`: comma-separated plugin names, such as `azure-devops,github-local-ops`.
-- `CODEX_SKILLS`: comma-separated skill names, such as `review-code,worktree`.
-- `CODEX_MCPS`: comma-separated safe MCP declarations, such as `gitnexus,mcp-debugger`.
-- `CODEX_INSTALL_SKILLS=true`: opt in to standalone top-level skill linking. The default is plugin-only skills from `thomas-codex-skills`.
-- `CODEX_INSTALL_MCPS=false`: skip safe MCP declaration installation.
-
-If standalone skill linking is enabled and a target skill path already exists and is not a symlink to this repo, the installer stops instead of replacing it. Move or back up the existing directory before rerunning.
+The repo does not ship a config-mutating installer. Codex owns marketplace installation, enablement, and plugin cache refresh. Standalone skill linking is no longer supported; install or refresh the `thomas-codex-skills` plugin instead.
 
 For local and private testing, prefer Azure CLI after a normal Microsoft sign-in:
 
@@ -244,7 +226,6 @@ Do not create or commit `.env` files.
 ```bash
 npm run verify:manifests
 npm run verify:plugin-descriptors
-npm run verify:installer
 npm run verify:skills
 npm run public-safety
 npm run workflows:syntax

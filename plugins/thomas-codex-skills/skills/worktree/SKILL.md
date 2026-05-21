@@ -8,7 +8,8 @@ description: "Create a git worktree or switch checkout for a PR number, branch n
 This skill is a thin coordinator around a few shell scripts plus the native
 `EnterWorktree` tool when the Codex runtime exposes it. **Do not re-implement
 their logic in inline bash** - call the scripts and react to their output/exit
-codes. Scripts live in `~/.Codex/skills/worktree/scripts/`.
+codes. Scripts live in this skill's `scripts/` directory; resolve that path
+relative to this `SKILL.md` in the installed plugin copy.
 
 - `gather.sh [arg]` - one call. Fetches, detects Graphite, either resolves `arg` to a branch or gathers picker data. Returns JSON.
 - `EnterWorktree(name=<branch>)` - optional native tool. Use it only when it is
@@ -25,7 +26,7 @@ codes. Scripts live in `~/.Codex/skills/worktree/scripts/`.
 ### 1. Gather
 
 ```bash
-~/.Codex/skills/worktree/scripts/gather.sh "${ARG:-}"
+<worktree_skill_dir>/scripts/gather.sh "${ARG:-}"
 ```
 
 Parse the JSON. Fields you care about:
@@ -108,7 +109,7 @@ checkout, and session switching. You only have to do three steps:
    - Print a hint block
 
    ```bash
-   ~/.Codex/skills/worktree/scripts/post-enter.sh <orig_root>
+   <worktree_skill_dir>/scripts/post-enter.sh <orig_root>
    ```
 
 3. **Relay the hint block to the user**, along with any warnings from gather (`fetch_warn`, `auth_hint`).
@@ -120,7 +121,7 @@ surface that native session switching is unavailable and run the app-server
 probe helper before using legacy manual discipline:
 
 ```bash
-~/.Codex/skills/worktree/scripts/rebind-current-thread.mjs --branch <branch> --source <orig_root> --thread-id "${CODEX_THREAD_ID:-}"
+<worktree_skill_dir>/scripts/rebind-current-thread.mjs --branch <branch> --source <orig_root> --thread-id "${CODEX_THREAD_ID:-}"
 ```
 
 Parse the JSON result and handle it honestly:
@@ -140,7 +141,7 @@ If the helper cannot run at all and the user still wants a worktree, use the
 legacy script fallback:
 
 ```bash
-~/.Codex/skills/worktree/scripts/execute.sh worktree <branch> <orig_root> <is_graphite>
+<worktree_skill_dir>/scripts/execute.sh worktree <branch> <orig_root> <is_graphite>
 ```
 
 The legacy fallback uses plain `git worktree add` without the session switch. The
@@ -150,7 +151,7 @@ absolute paths for file edits.
 ### 5. Execute - switch mode
 
 ```bash
-~/.Codex/skills/worktree/scripts/execute.sh switch <branch> <orig_root> <is_graphite>
+<worktree_skill_dir>/scripts/execute.sh switch <branch> <orig_root> <is_graphite>
 ```
 
 Read the exit code:

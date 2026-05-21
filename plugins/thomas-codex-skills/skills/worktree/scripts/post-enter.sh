@@ -26,6 +26,7 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 MAIN_ROOT="${1:-}"
 if [ -z "$MAIN_ROOT" ] || [ ! -d "$MAIN_ROOT" ]; then
   printf 'usage: post-enter.sh <main_root>\n' >&2
@@ -102,7 +103,7 @@ shopt -u nullglob
 # --- ensure GitNexus has the cheapest usable state for this worktree ---
 GITNEXUS_MSG="not run"
 run_gitnexus_index() {
-  local helper="${HOME}/.Codex/skills/worktree/scripts/gitnexus-worktree-index.mjs"
+  local helper="$SCRIPT_DIR/gitnexus-worktree-index.mjs"
   if command -v node >/dev/null 2>&1 && [ -f "$helper" ]; then
     GITNEXUS_MSG="$(node "$helper" --repo "$WT_PATH" --source "$MAIN_ROOT" 2>/dev/null || true)"
     [ -n "$GITNEXUS_MSG" ] || GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
