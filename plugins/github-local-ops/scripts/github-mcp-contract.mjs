@@ -414,12 +414,17 @@ if (args[0] === "api" && args[1] === "--method" && args[2] === "POST" && args[3]
 if (args[0] === "api" && args[1] === "--method" && args[2] === "POST" && args[3] === "repos/owner/repo/pulls/1/reviews") {
   const input = fs.readFileSync(0, "utf8");
   const payload = JSON.parse(input);
+  const reviewStates = {
+    COMMENT: "COMMENTED",
+    APPROVE: "APPROVED",
+    REQUEST_CHANGES: "CHANGES_REQUESTED"
+  };
   writeJsonl(process.env.FAKE_REVIEW_LOG, { payload });
   console.log(JSON.stringify({
     id: 80,
     node_id: "PRR_80",
     body: payload.body || "",
-    state: "COMMENTED",
+    state: reviewStates[payload.event] || "COMMENTED",
     html_url: "https://github.com/owner/repo/pull/1#pullrequestreview-80"
   }));
   process.exit(0);
@@ -432,7 +437,8 @@ if (args[0] === "api" && args[1]?.startsWith("repos/owner/repo/pulls/1/reviews/8
   }
   const reviews = readJsonl(process.env.FAKE_REVIEW_LOG);
   const payload = reviews.at(-1)?.payload || { comments: [] };
-  console.log(JSON.stringify(payload.comments.map((comment, index) => ({
+  const comments = Array.isArray(payload.comments) ? payload.comments : [];
+  console.log(JSON.stringify(comments.map((comment, index) => ({
     id: 8100 + index,
     body: comment.body,
     path: comment.path,
@@ -1635,11 +1641,51 @@ async function main() {
         repo: "owner/repo",
         number: 1,
         commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        event: "DISMISS"
+      }
+    },
+    "payload.event must be COMMENT, APPROVE, or REQUEST_CHANGES"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        event: ["APPROVE"]
+      }
+    },
+    "payload.event is required"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        body: "Unsupported inline request changes.",
         event: "REQUEST_CHANGES",
         comments: [{ path: "src/app.py", line: 1, body: "Unsupported event" }]
       }
     },
-    "payload.event must be COMMENT"
+    "payload.comments can only be used with COMMENT"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        body: "Inline review comments need a commit id.",
+        comments: [{ path: "src/app.py", line: 1, body: "Missing commit id" }]
+      }
+    },
+    "payload.commitId is required"
   );
   await expectToolError(
     "github_mutation_preview",
@@ -1654,6 +1700,68 @@ async function main() {
     },
     "payload.body is required"
   );
+
+  for (const topLevelReview of [
+    { event: "COMMENT", body: "Top-level review comment.", expectedState: "COMMENTED" },
+    { event: "APPROVE", body: "Looks good.", expectedState: "APPROVED" },
+    { event: "REQUEST_CHANGES", body: "Please address the blockers.", expectedState: "CHANGES_REQUESTED" }
+  ]) {
+    const callsBeforeTopLevelPreview = readCommandLog().length;
+    const topLevelPreview = await request("tools/call", {
+      name: "github_mutation_preview",
+      arguments: {
+        operation: "pull_request_review",
+        payload: {
+          repo: "owner/repo",
+          number: 1,
+          event: topLevelReview.event,
+          body: topLevelReview.body
+        }
+      }
+    });
+    const topLevelPreviewJson = jsonContent(topLevelPreview);
+    if (
+      topLevelPreviewJson.operation !== "pull_request_review"
+      || !topLevelPreviewJson.approvalToken
+      || topLevelPreviewJson.request?.endpoint !== "repos/owner/repo/pulls/1/reviews"
+      || topLevelPreviewJson.requestBody?.event !== topLevelReview.event
+      || topLevelPreviewJson.requestBody?.body !== topLevelReview.body
+      || Object.hasOwn(topLevelPreviewJson.requestBody || {}, "commit_id")
+      || Object.hasOwn(topLevelPreviewJson.requestBody || {}, "comments")
+      || !topLevelPreviewJson.command?.args?.includes("--input")
+    ) {
+      throw new Error("pull_request_review preview did not expose the expected top-level request");
+    }
+    if (readCommandLog().length !== callsBeforeTopLevelPreview) {
+      throw new Error("top-level pull_request_review preview should not invoke gh or git");
+    }
+    const topLevelExecute = await request("tools/call", {
+      name: "github_mutation_execute",
+      arguments: {
+        approvalToken: topLevelPreviewJson.approvalToken
+      }
+    });
+    const topLevelExecuteJson = jsonContent(topLevelExecute);
+    const topLevelPayload = readJsonlFile(reviewLog).at(-1)?.payload;
+    if (
+      topLevelPayload?.event !== topLevelReview.event
+      || topLevelPayload?.body !== topLevelReview.body
+      || Object.hasOwn(topLevelPayload || {}, "commit_id")
+      || Object.hasOwn(topLevelPayload || {}, "comments")
+    ) {
+      throw new Error("pull_request_review execute did not pass the expected top-level JSON payload on stdin");
+    }
+    if (
+      topLevelExecuteJson.review?.state !== topLevelReview.expectedState
+      || topLevelExecuteJson.reviewReadback?.stateMatches !== true
+      || topLevelExecuteJson.reviewReadback?.bodyMatches !== true
+      || topLevelExecuteJson.readbackVerified !== true
+      || topLevelExecuteJson.postedCommentCount !== 0
+      || topLevelExecuteJson.comments?.length !== 0
+    ) {
+      throw new Error("pull_request_review execute did not return top-level review readback evidence");
+    }
+  }
 
   const callsBeforeBatchPreview = readCommandLog().length;
   const batchPreview = await request("tools/call", {
