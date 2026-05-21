@@ -20,6 +20,7 @@ const identityFile = join(fakeBinDir, "identity-rules.json");
 const fakeGh = join(fakeBinDir, "gh.mjs");
 const fakeGit = join(fakeBinDir, "git.mjs");
 const fakeSshAdd = join(fakeBinDir, "ssh-add.mjs");
+const fakeSshAgent = join(fakeBinDir, "ssh-agent.mjs");
 const requestTimeoutMs = Number.parseInt(process.env.GITHUB_LOCAL_OPS_CONTRACT_TIMEOUT_MS || "15000", 10);
 fs.writeFileSync(stateFile, JSON.stringify({
   detached: false,
@@ -79,7 +80,7 @@ function tokenAccount() {
   }
   return null;
 }
-fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "gh", args, cwd: process.cwd(), tokenAccount: tokenAccount() }) + "\\n");
+fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "gh", args, cwd: process.cwd(), tokenAccount: tokenAccount(), sshAuthSock: process.env.SSH_AUTH_SOCK || null }) + "\\n");
 function state() {
   try {
     return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
@@ -563,7 +564,7 @@ function askpassTokenAccount() {
   }
   return null;
 }
-fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "git", args, cwd: process.cwd(), askpassTokenAccount: askpassTokenAccount(), gitAskpass: process.env.GIT_ASKPASS || null }) + "\\n");
+fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "git", args, cwd: process.cwd(), askpassTokenAccount: askpassTokenAccount(), gitAskpass: process.env.GIT_ASKPASS || null, sshAuthSock: process.env.SSH_AUTH_SOCK || null }) + "\\n");
 function state() {
   try {
     return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
@@ -579,6 +580,10 @@ if (args[0] === "--version") {
   process.exit(0);
 }
 if (args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+  if (state().notGit) {
+    console.error("fatal: not a git repository");
+    process.exit(128);
+  }
   console.log(process.cwd());
   process.exit(0);
 }
@@ -661,6 +666,10 @@ if (args[0] === "fetch") {
   process.exit(0);
 }
 if (effectiveArgs[0] === "push") {
+  if (state().remoteUrl?.startsWith("git@github.com:") && !process.env.SSH_AUTH_SOCK) {
+    console.error("missing SSH_AUTH_SOCK for SSH push");
+    process.exit(1);
+  }
   console.log("pushed");
   process.exit(0);
 }
@@ -670,7 +679,7 @@ process.exit(1);
 fs.writeFileSync(fakeSshAdd, `#!/usr/bin/env node
 import fs from "node:fs";
 const args = process.argv.slice(2);
-fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "ssh-add", args, cwd: process.cwd() }) + "\\n");
+fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "ssh-add", args, cwd: process.cwd(), sshAuthSock: process.env.SSH_AUTH_SOCK || null }) + "\\n");
 function state() {
   try {
     return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
@@ -682,6 +691,10 @@ function writeState(next) {
   fs.writeFileSync(process.env.FAKE_STATE_FILE, JSON.stringify(next), "utf8");
 }
 if (args[0] === "-l") {
+  if (!process.env.SSH_AUTH_SOCK) {
+    console.error("Could not open a connection to your authentication agent.");
+    process.exit(2);
+  }
   if (!state().sshLoaded) {
     console.error("The agent has no identities.");
     process.exit(1);
@@ -690,7 +703,16 @@ if (args[0] === "-l") {
   process.exit(0);
 }
 if (args[0]) {
+  const keyPath = args[0] === "--apple-use-keychain" ? args[1] : args[0];
+  if (!process.env.SSH_AUTH_SOCK) {
+    console.error("Could not open a connection to your authentication agent.");
+    process.exit(2);
+  }
   const current = state();
+  if (current.sshAddFails) {
+    console.error("could not load key " + keyPath);
+    process.exit(1);
+  }
   current.sshLoaded = true;
   writeState(current);
   process.exit(0);
@@ -698,9 +720,44 @@ if (args[0]) {
 console.error("unexpected ssh-add args " + JSON.stringify(args));
 process.exit(1);
 `, "utf8");
+fs.writeFileSync(fakeSshAgent, `#!/usr/bin/env node
+import fs from "node:fs";
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_COMMAND_LOG, JSON.stringify({ bin: "ssh-agent", args, cwd: process.cwd() }) + "\\n");
+function state() {
+  try {
+    return JSON.parse(fs.readFileSync(process.env.FAKE_STATE_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function writeState(next) {
+  fs.writeFileSync(process.env.FAKE_STATE_FILE, JSON.stringify(next), "utf8");
+}
+const current = state();
+if (args[0] === "-k") {
+  current.agentStops = (current.agentStops || 0) + 1;
+  writeState(current);
+  console.log("unset SSH_AUTH_SOCK;");
+  console.log("unset SSH_AGENT_PID;");
+  process.exit(0);
+}
+if (current.sshAgentFails) {
+  console.error("ssh-agent failed");
+  process.exit(1);
+}
+current.agentStarts = (current.agentStarts || 0) + 1;
+writeState(current);
+const socketIndex = args.indexOf("-a");
+const socketPath = socketIndex >= 0 && args[socketIndex + 1] ? args[socketIndex + 1] : "/tmp/github-local-ops-fake-agent.sock";
+console.log("SSH_AUTH_SOCK=" + socketPath + "; export SSH_AUTH_SOCK;");
+console.log("SSH_AGENT_PID=12345; export SSH_AGENT_PID;");
+console.log("echo Agent pid 12345;");
+`, "utf8");
 fs.chmodSync(fakeGh, 0o755);
 fs.chmodSync(fakeGit, 0o755);
 fs.chmodSync(fakeSshAdd, 0o755);
+fs.chmodSync(fakeSshAgent, 0o755);
 
 if (!serverConfig || serverConfig.command !== "node") {
   throw new Error("github-local-ops .mcp.json must declare a node command");
@@ -721,6 +778,7 @@ const child = spawn(serverConfig.command, serverConfig.args, {
     GITHUB_LOCAL_OPS_GH_BIN: fakeGh,
     GITHUB_LOCAL_OPS_GIT_BIN: fakeGit,
     GITHUB_LOCAL_OPS_SSH_ADD_BIN: fakeSshAdd,
+    GITHUB_LOCAL_OPS_SSH_AGENT_BIN: fakeSshAgent,
     GITHUB_LOCAL_OPS_IDENTITY_FILE: identityFile,
     FAKE_COMMAND_LOG: commandLog,
     FAKE_REPLY_LOG: replyLog,
@@ -728,7 +786,9 @@ const child = spawn(serverConfig.command, serverConfig.args, {
     FAKE_REVIEWER_LOG: reviewerLog,
     FAKE_BODY_FILE: bodyFile,
     FAKE_CHECKS_FILE: checksFile,
-    FAKE_STATE_FILE: stateFile
+    FAKE_STATE_FILE: stateFile,
+    SSH_AUTH_SOCK: "",
+    SSH_AGENT_PID: ""
   }
 });
 
@@ -889,6 +949,9 @@ async function main() {
   if (setup.identity?.identity?.status !== "ready" || setup.identity?.identity?.localOnly !== true) {
     throw new Error("github_setup_status did not include ready local-only identity status");
   }
+  if (!readCommandLog().some((call) => call.bin === "ssh-agent" && call.args.includes("-a"))) {
+    throw new Error("github_setup_status did not recover an SSH agent when SSH_AUTH_SOCK was absent from the MCP environment");
+  }
   const setupRepoView = readCommandLog().find((call) => call.bin === "gh" && call.args[0] === "repo" && call.args[1] === "view");
   if (setupRepoView?.tokenAccount !== "owner") {
     throw new Error("repo-aware gh calls should use the owner account token for owner/repo");
@@ -905,6 +968,33 @@ async function main() {
     || identityStatusJson.fixes?.length !== 0
   ) {
     throw new Error("github_identity_status did not report the ready local owner identity");
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    sshLoaded: false,
+    gitConfig: {
+      "user.email": "owner@example.com",
+      "gpg.format": "ssh",
+      "user.signingkey": "owner-signing-key"
+    }
+  }), "utf8");
+  const callsBeforeMissingKeyIdentity = readCommandLog().length;
+  const missingKeyIdentity = await request("tools/call", {
+    name: "github_identity_status",
+    arguments: { cwd: pluginRoot, repo: "owner/repo" }
+  });
+  const missingKeyIdentityJson = jsonContent(missingKeyIdentity);
+  if (missingKeyIdentityJson.identity?.status !== "ready" || missingKeyIdentityJson.fixes?.length !== 0) {
+    throw new Error("github_identity_status did not auto-load the configured SSH key for an unambiguous identity rule");
+  }
+  const missingKeySshAddCalls = readCommandLog()
+    .slice(callsBeforeMissingKeyIdentity)
+    .filter((call) => call.bin === "ssh-add");
+  if (!missingKeySshAddCalls.some((call) => call.args.includes(join(fakeBinDir, "id_owner")))) {
+    throw new Error("github_identity_status did not load the configured SSH key path when it was missing from the agent");
   }
   const personalIdentityStatus = await request("tools/call", {
     name: "github_identity_status",
@@ -959,6 +1049,27 @@ async function main() {
     fs.renameSync(missingIdentityBackup, identityFile);
   }
   fs.writeFileSync(stateFile, JSON.stringify({
+    notGit: true,
+    sshLoaded: true,
+    gitConfig: {
+      "user.email": "wrong@example.com",
+      "gpg.format": "openpgp",
+      "user.signingkey": "wrong-key"
+    }
+  }), "utf8");
+  const repoOnlyIdentity = await request("tools/call", {
+    name: "github_identity_status",
+    arguments: { cwd: fakeBinDir, repo: "owner/repo" }
+  });
+  const repoOnlyIdentityJson = jsonContent(repoOnlyIdentity);
+  if (
+    repoOnlyIdentityJson.git?.available !== false
+    || repoOnlyIdentityJson.identity?.status !== "ready"
+    || repoOnlyIdentityJson.fixes?.some((fix) => fix.kind !== "ssh_add")
+  ) {
+    throw new Error("repo-only identity status should not suggest repo-local git config fixes without a checkout");
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
     detached: false,
     head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     prListMode: "match",
@@ -977,7 +1088,7 @@ async function main() {
   const identityFixPreviewJson = jsonContent(identityFixPreview);
   if (
     !identityFixPreviewJson.approvalToken
-    || identityFixPreviewJson.fixes?.map((fix) => fix.kind).join(",") !== "git_email,gpg_format,signing_key,ssh_add"
+    || identityFixPreviewJson.fixes?.map((fix) => fix.kind).join(",") !== "git_email,gpg_format,signing_key"
   ) {
     throw new Error("github_identity_fix_preview did not preview all required local identity fixes");
   }
@@ -993,8 +1104,8 @@ async function main() {
     (call.bin === "git" && call.args[0] === "config")
     || call.bin === "ssh-add"
   ));
-  if (!fixCommands.some((call) => call.bin === "ssh-add" && call.args[0] === join(fakeBinDir, "id_owner"))) {
-    throw new Error("github_identity_fix_execute did not load the configured SSH key");
+  if (!fixCommands.some((call) => call.bin === "git" && call.args[1] === "user.signingkey")) {
+    throw new Error("github_identity_fix_execute did not apply the configured signing key");
   }
   fs.writeFileSync(stateFile, JSON.stringify({
     detached: false,
@@ -1019,6 +1130,11 @@ async function main() {
     "github_repo_view",
     { cwd: pluginRoot, repo: "owner/repo" },
     "GitHub identity selection for owner/repo is ambiguous"
+  );
+  await expectToolError(
+    "github_git_push_preview",
+    { cwd: pluginRoot, refspec: "HEAD:refs/heads/feature/review", dryRun: true },
+    "Identity for owner/repo is ambiguous"
   );
   fs.writeFileSync(identityFile, originalIdentityRules, "utf8");
   const ambiguousRepo = await request("tools/call", {
@@ -1276,6 +1392,24 @@ async function main() {
     head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     prListMode: "match",
     prNumber: 292,
+    sshLoaded: false,
+    sshAddFails: true,
+    gitConfig: {
+      "user.email": "owner@example.com",
+      "gpg.format": "ssh",
+      "user.signingkey": "owner-signing-key"
+    }
+  }), "utf8");
+  await expectToolError(
+    "github_git_push_preview",
+    { cwd: pluginRoot, refspec: "HEAD:refs/heads/feature/review", dryRun: true },
+    "Identity for owner/repo is needs_fix"
+  );
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
     sshLoaded: true,
     gitConfig: {
       "user.email": "owner@example.com",
@@ -1318,6 +1452,58 @@ async function main() {
   ) {
     throw new Error("github_git_push_execute did not use command-scoped owner credentials for HTTPS push");
   }
+
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    remoteUrl: "git@github.com:owner/repo.git",
+    sshLoaded: true,
+    gitConfig: {
+      "user.email": "owner@example.com",
+      "gpg.format": "ssh",
+      "user.signingkey": "owner-signing-key"
+    }
+  }), "utf8");
+  const sshPushPreview = await request("tools/call", {
+    name: "github_git_push_preview",
+    arguments: {
+      cwd: pluginRoot,
+      refspec: "HEAD:refs/heads/feature/review",
+      dryRun: true
+    }
+  });
+  const sshPushPreviewJson = jsonContent(sshPushPreview);
+  const callsBeforeSshPushExecute = readCommandLog().length;
+  const sshPushExecute = await request("tools/call", {
+    name: "github_git_push_execute",
+    arguments: { approvalToken: sshPushPreviewJson.approvalToken }
+  });
+  const sshPushExecuteJson = jsonContent(sshPushExecute);
+  const sshPushCalls = readCommandLog()
+    .slice(callsBeforeSshPushExecute)
+    .filter((call) => call.bin === "git" && call.args.includes("push"));
+  if (
+    sshPushExecuteJson.status !== 0
+    || sshPushCalls.length !== 1
+    || sshPushCalls[0].args[0] !== "push"
+    || !sshPushCalls[0].sshAuthSock
+  ) {
+    throw new Error("github_git_push_execute did not pass SSH agent env for SSH remotes");
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    sshLoaded: true,
+    gitConfig: {
+      "user.email": "owner@example.com",
+      "gpg.format": "ssh",
+      "user.signingkey": "owner-signing-key"
+    }
+  }), "utf8");
 
   const draftPrPreview = await request("tools/call", {
     name: "github_mutation_preview",

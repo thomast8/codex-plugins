@@ -11,6 +11,10 @@ const SERVER_VERSION = "0.1.0";
 const GH_BIN = process.env.GITHUB_LOCAL_OPS_GH_BIN || "gh";
 const GIT_BIN = process.env.GITHUB_LOCAL_OPS_GIT_BIN || "git";
 const SSH_ADD_BIN = process.env.GITHUB_LOCAL_OPS_SSH_ADD_BIN || "ssh-add";
+const SSH_AGENT_BIN = process.env.GITHUB_LOCAL_OPS_SSH_AGENT_BIN || "ssh-agent";
+const LAUNCHCTL_BIN = process.env.GITHUB_LOCAL_OPS_LAUNCHCTL_BIN || "launchctl";
+const DEFAULT_SSH_AGENT_SOCKET_DIR = os.platform() === "win32" ? os.tmpdir() : (fs.existsSync("/tmp") ? "/tmp" : os.tmpdir());
+const SSH_AGENT_SOCKET_DIR = process.env.GITHUB_LOCAL_OPS_SSH_AGENT_SOCKET_DIR || DEFAULT_SSH_AGENT_SOCKET_DIR;
 const TOKEN_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_APPROVAL_TTL_MS || 10 * 60 * 1000);
 const FETCH_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_FETCH_TTL_MS || 5 * 60 * 1000);
 const AUTH_CACHE_TTL_MS = Number(process.env.GITHUB_LOCAL_OPS_AUTH_CACHE_TTL_MS || 5 * 60 * 1000);
@@ -22,6 +26,8 @@ const approvals = new Map();
 const fetchCache = new Map();
 const ghAccountTokenCache = new Map();
 const ghRepoAuthCache = new Map();
+let sshAgentCache = null;
+let managedSshAgentEnv = null;
 
 function publicWritesEnabled(env = process.env, argv = process.argv) {
   return /^(1|true|yes)$/i.test(env.GITHUB_LOCAL_OPS_ENABLE_PUBLIC_WRITES || "")
@@ -655,6 +661,184 @@ function safeRunSshAdd(args, options = {}) {
   } catch (error) {
     return failedRun(SSH_ADD_BIN, args, options, error);
   }
+}
+
+function safeRunBin(bin, args, options = {}) {
+  try {
+    return run(bin, args, { ...options, allowFailure: true });
+  } catch (error) {
+    return failedRun(bin, args, options, error);
+  }
+}
+
+function withExtraEnv(options = {}, extraEnv = null) {
+  if (!extraEnv || Object.keys(extraEnv).length === 0) {
+    return options;
+  }
+  return {
+    ...options,
+    env: {
+      ...(options.env || {}),
+      ...extraEnv
+    }
+  };
+}
+
+function sshAgentReachable(result) {
+  const output = outputText(result) || "";
+  return result.status === 0 || (result.status === 1 && /no identities/i.test(output));
+}
+
+function sshAgentEnvKey(env = null) {
+  return env?.SSH_AUTH_SOCK || process.env.SSH_AUTH_SOCK || "";
+}
+
+function parseSshAgentEnv(output) {
+  const env = {};
+  for (const key of ["SSH_AUTH_SOCK", "SSH_AGENT_PID"]) {
+    const match = String(output || "").match(new RegExp(`${key}=([^;\\n]+)`));
+    if (match?.[1]) {
+      env[key] = match[1];
+    }
+  }
+  return env.SSH_AUTH_SOCK ? env : null;
+}
+
+function launchctlSshAgentEnv(cwd) {
+  if (os.platform() !== "darwin") {
+    return null;
+  }
+  const result = safeRunBin(LAUNCHCTL_BIN, ["getenv", "SSH_AUTH_SOCK"], { cwd });
+  const sock = trimOrNull(result.stdout);
+  return sock ? { SSH_AUTH_SOCK: sock } : null;
+}
+
+function startManagedSshAgent(cwd) {
+  const socketPath = path.join(
+    SSH_AGENT_SOCKET_DIR,
+    `github-local-ops-ssh-agent-${process.pid}-${Date.now()}-${randomBytes(4).toString("hex")}.sock`
+  );
+  const result = safeRunBin(SSH_AGENT_BIN, ["-a", socketPath, "-s"], { cwd });
+  if (result.status !== 0) {
+    return { env: null, result };
+  }
+  return { env: parseSshAgentEnv(result.stdout), result };
+}
+
+function candidateSshAgentEnvs(cwd) {
+  const candidates = [];
+  if (sshAgentCache?.env) {
+    candidates.push({ source: sshAgentCache.source, env: sshAgentCache.env });
+  }
+  if (process.env.SSH_AUTH_SOCK) {
+    candidates.push({ source: "process", env: null });
+  }
+  const launchctlEnv = launchctlSshAgentEnv(cwd);
+  if (launchctlEnv) {
+    candidates.push({ source: "launchctl", env: launchctlEnv });
+  }
+
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    const key = sshAgentEnvKey(candidate.env);
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function resolveSshAgent(cwd) {
+  const attempts = [];
+  for (const candidate of candidateSshAgentEnvs(cwd)) {
+    const list = safeRunSshAdd(["-l"], withExtraEnv({ cwd }, candidate.env));
+    attempts.push({ source: candidate.source, list });
+    if (sshAgentReachable(list)) {
+      sshAgentCache = candidate.env ? { source: candidate.source, env: candidate.env } : null;
+      return {
+        source: candidate.source,
+        env: candidate.env,
+        list,
+        attempts,
+        started: false,
+        startResult: null
+      };
+    }
+  }
+
+  const started = startManagedSshAgent(cwd);
+  if (started.env) {
+    const list = safeRunSshAdd(["-l"], withExtraEnv({ cwd }, started.env));
+    attempts.push({ source: "managed", list });
+    if (sshAgentReachable(list)) {
+      sshAgentCache = { source: "managed", env: started.env };
+      managedSshAgentEnv = started.env;
+      return {
+        source: "managed",
+        env: started.env,
+        list,
+        attempts,
+        started: true,
+        startResult: started.result
+      };
+    }
+    safeRunBin(SSH_AGENT_BIN, ["-k"], { env: started.env });
+  }
+
+  const fallback = attempts.at(-1)?.list || started.result || safeRunSshAdd(["-l"], { cwd });
+  return {
+    source: null,
+    env: null,
+    list: fallback,
+    attempts,
+    started: false,
+    startResult: started.result || null
+  };
+}
+
+function addSshKeyToAgent(rule, cwd, agentEnv) {
+  if (!rule?.sshKeyPath) {
+    return null;
+  }
+  if (os.platform() === "darwin") {
+    const keychain = safeRunSshAdd(
+      ["--apple-use-keychain", rule.sshKeyPath],
+      withExtraEnv({ cwd, maxBuffer: 20 * 1024 * 1024 }, agentEnv)
+    );
+    if (keychain.status === 0) {
+      return keychain;
+    }
+  }
+  return safeRunSshAdd(
+    [rule.sshKeyPath],
+    withExtraEnv({ cwd, maxBuffer: 20 * 1024 * 1024 }, agentEnv)
+  );
+}
+
+function sshCommandEnv(cwd) {
+  const agent = resolveSshAgent(cwd);
+  return agent.env ? { ...agent.env } : {};
+}
+
+function stopManagedSshAgent() {
+  if (!managedSshAgentEnv?.SSH_AGENT_PID) {
+    return;
+  }
+  const env = managedSshAgentEnv;
+  managedSshAgentEnv = null;
+  if (sshAgentCache?.source === "managed") {
+    sshAgentCache = null;
+  }
+  safeRunBin(SSH_AGENT_BIN, ["-k"], { env });
+}
+
+process.once("exit", stopManagedSshAgent);
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, () => {
+    stopManagedSshAgent();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
 }
 
 function failedRun(bin, args, options, error) {
@@ -1836,14 +2020,44 @@ function gitConfigValue(cwd, key) {
   return result.status === 0 ? trimOrNull(result.stdout) : null;
 }
 
-function sshKeyReady(rule, cwd) {
-  const list = safeRunSshAdd(["-l"], { cwd });
-  const output = outputText(list) || "";
+function sshKeyReady(rule, cwd, options = {}) {
+  if (!rule?.sshKeyPath && !rule?.sshKeyFingerprint) {
+    return {
+      command: [SSH_ADD_BIN, "-l"],
+      status: null,
+      ready: null,
+      fingerprint: null,
+      keyPath: null,
+      output: null,
+      agent: {
+        source: null,
+        reachable: null,
+        managed: false
+      },
+      loadAttempt: null
+    };
+  }
+  const agent = resolveSshAgent(cwd);
+  let list = agent.list;
+  let load = null;
+  let output = outputText(list) || "";
   let ready = null;
   if (rule?.sshKeyFingerprint) {
     ready = output.includes(rule.sshKeyFingerprint);
   } else if (rule?.sshKeyPath) {
     ready = list.status === 0 ? null : false;
+  }
+  if (options.autoRepair === true && rule?.sshKeyPath && ready !== true) {
+    load = addSshKeyToAgent(rule, cwd, agent.env);
+    if (load?.status === 0) {
+      list = safeRunSshAdd(["-l"], withExtraEnv({ cwd }, agent.env));
+      output = outputText(list) || "";
+      if (rule?.sshKeyFingerprint) {
+        ready = output.includes(rule.sshKeyFingerprint);
+      } else {
+        ready = list.status === 0 ? null : false;
+      }
+    }
   }
   return {
     command: list.command,
@@ -1851,7 +2065,20 @@ function sshKeyReady(rule, cwd) {
     ready,
     fingerprint: rule?.sshKeyFingerprint || null,
     keyPath: rule?.sshKeyPath || null,
-    output: output || null
+    output: output || null,
+    agent: {
+      source: agent.source,
+      reachable: sshAgentReachable(list),
+      managed: agent.source === "managed"
+    },
+    loadAttempt: load
+      ? {
+          command: load.command,
+          status: load.status,
+          stdout: truncate(load.stdout || "", DEFAULT_MAX_BYTES),
+          stderr: truncate(load.stderr || "", DEFAULT_MAX_BYTES)
+        }
+      : null
   };
 }
 
@@ -1859,7 +2086,8 @@ function identityFixes(status) {
   const fixes = [];
   const expected = status.expected || {};
   const actual = status.actual || {};
-  if (expected.gitEmail && actual.gitEmail !== expected.gitEmail) {
+  const hasCheckout = Boolean(status.git?.root);
+  if (hasCheckout && expected.gitEmail && actual.gitEmail !== expected.gitEmail) {
     fixes.push({
       kind: "git_email",
       command: [GIT_BIN, "config", "user.email", expected.gitEmail],
@@ -1867,7 +2095,7 @@ function identityFixes(status) {
       reason: `repo-local user.email is ${actual.gitEmail || "unset"}`
     });
   }
-  if (expected.gpgFormat && actual.gpgFormat !== expected.gpgFormat) {
+  if (hasCheckout && expected.gpgFormat && actual.gpgFormat !== expected.gpgFormat) {
     fixes.push({
       kind: "gpg_format",
       command: [GIT_BIN, "config", "gpg.format", expected.gpgFormat],
@@ -1875,7 +2103,7 @@ function identityFixes(status) {
       reason: `repo-local gpg.format is ${actual.gpgFormat || "unset"}`
     });
   }
-  if (expected.signingKey && actual.signingKey !== expected.signingKey) {
+  if (hasCheckout && expected.signingKey && actual.signingKey !== expected.signingKey) {
     fixes.push({
       kind: "signing_key",
       command: [GIT_BIN, "config", "user.signingkey", expected.signingKey],
@@ -1949,8 +2177,8 @@ function buildIdentityStatus(input = {}) {
       warnings.push(`Could not infer a GitHub API account for ${targetRepo}: ${authError}`);
     }
   }
-  const gitRoot = local.checkout.root || cwd;
-  const ssh = sshKeyReady(rule, cwd);
+  const gitRoot = local.checkout.root;
+  const ssh = sshKeyReady(rule, cwd, { autoRepair: Boolean(rule && !local.ambiguous) });
   const expected = rule
     ? {
         githubAccount: rule.githubAccount || null,
@@ -1961,11 +2189,17 @@ function buildIdentityStatus(input = {}) {
         sshKeyFingerprint: rule.sshKeyFingerprint || null
       }
     : {};
-  const actual = {
-    gitEmail: gitConfigValue(gitRoot, "user.email"),
-    gpgFormat: gitConfigValue(gitRoot, "gpg.format"),
-    signingKey: gitConfigValue(gitRoot, "user.signingkey")
-  };
+  const actual = gitRoot
+    ? {
+        gitEmail: gitConfigValue(gitRoot, "user.email"),
+        gpgFormat: gitConfigValue(gitRoot, "gpg.format"),
+        signingKey: gitConfigValue(gitRoot, "user.signingkey")
+      }
+    : {
+        gitEmail: null,
+        gpgFormat: null,
+        signingKey: null
+      };
   const baseStatus = {
     cwd,
     freshness,
@@ -4303,6 +4537,8 @@ async function githubGitPushExecute(input = {}) {
     env.GIT_ASKPASS = writeAskpassScript();
     env.GIT_TERMINAL_PROMPT = "0";
     env.GITHUB_LOCAL_OPS_ASKPASS_TOKEN = tokenInfo.token;
+  } else if (refreshed.protocol === "ssh") {
+    Object.assign(env, sshCommandEnv(refreshed.cwd));
   }
   const result = runGit(refreshed.args, {
     cwd: refreshed.cwd,

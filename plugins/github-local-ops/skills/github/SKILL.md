@@ -16,6 +16,7 @@ This plugin does not bypass an admin-disabled hosted connector. It uses the user
 - Call `github_setup_status` first when setup, account, repository, or plugin readiness is unclear. Pass the user checkout `cwd` for repo-local work, or pass `repo` when operating only on a named GitHub repository.
 - Identity mappings are local-only runtime state. The default file is `~/.Codex/plugins/github-local-ops/identity-rules.json`; `GITHUB_LOCAL_OPS_IDENTITY_FILE` can override it. Never create, copy, or commit identity mappings into a repository, Codex config checkout, plugin repo, PR, issue, or release.
 - Prefer the existing GitHub CLI login and macOS keychain state. For repo-scoped operations, let the provider select an authenticated account with command-scoped credentials. Do not run `gh auth switch` or rewrite global git credential state.
+- If a side chat, worktree chat, automation, or MCP process cannot see `SSH_AUTH_SOCK`, keep using provider identity repair and provider push helpers. Do not fall back to raw `git push`; GitHub Local Ops is responsible for recovering or starting an SSH agent and loading the configured key after an unambiguous local identity rule match.
 - Do not create or edit `.env` files for GitHub auth. Never ask the user to paste tokens into chat or commit credentials to repo files.
 
 ## Shell Boundary
