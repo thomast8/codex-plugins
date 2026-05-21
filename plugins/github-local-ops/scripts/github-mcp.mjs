@@ -749,7 +749,7 @@ function candidateSshAgentEnvs(cwd) {
   });
 }
 
-function resolveSshAgent(cwd) {
+function resolveSshAgent(cwd, options = {}) {
   const attempts = [];
   for (const candidate of candidateSshAgentEnvs(cwd)) {
     const list = safeRunSshAdd(["-l"], withExtraEnv({ cwd }, candidate.env));
@@ -765,6 +765,18 @@ function resolveSshAgent(cwd) {
         startResult: null
       };
     }
+  }
+
+  if (options.startAgent === false) {
+    const fallback = attempts.at(-1)?.list || safeRunSshAdd(["-l"], { cwd });
+    return {
+      source: null,
+      env: null,
+      list: fallback,
+      attempts,
+      started: false,
+      startResult: null
+    };
   }
 
   const started = startManagedSshAgent(cwd);
@@ -814,6 +826,33 @@ function addSshKeyToAgent(rule, cwd, agentEnv) {
     [rule.sshKeyPath],
     withExtraEnv({ cwd, maxBuffer: 20 * 1024 * 1024 }, agentEnv)
   );
+}
+
+function sshAddPreviewCommand(keyPath) {
+  return os.platform() === "darwin"
+    ? [SSH_ADD_BIN, "--apple-use-keychain", keyPath]
+    : [SSH_ADD_BIN, keyPath];
+}
+
+function runSshAddIdentityFix(fix) {
+  const keyPath = fix.command.at(-1);
+  const cwd = fix.cwd || process.cwd();
+  const agent = resolveSshAgent(cwd);
+  const result = addSshKeyToAgent({ sshKeyPath: keyPath }, cwd, agent.env);
+  if (!result || result.status !== 0) {
+    const command = result?.command || [SSH_ADD_BIN, keyPath];
+    const stdout = result?.stdout || "";
+    const stderr = result?.stderr || "";
+    const status = result?.status ?? null;
+    const message = stderr.trim() || stdout.trim() || (status == null ? "ssh-add failed" : `exit ${status}`);
+    const error = new Error(`${command.join(" ")} failed: ${message}`);
+    error.command = command;
+    error.stdout = stdout;
+    error.stderr = stderr;
+    error.status = status;
+    throw error;
+  }
+  return result;
 }
 
 function sshCommandEnv(cwd) {
@@ -1486,10 +1525,7 @@ function normalizePullRequestReviewEvent(value) {
   return event;
 }
 
-function normalizeOptionalPullRequestReviewCommitId(value, hasComments) {
-  if (value == null && !hasComments) {
-    return null;
-  }
+function normalizePullRequestReviewCommitId(value) {
   const commitId = requireNonOptionString(value, "payload.commitId").toLowerCase();
   if (!/^[0-9a-f]{40}$/.test(commitId)) {
     throw new Error("payload.commitId must be a full 40-character commit SHA.");
@@ -2076,7 +2112,9 @@ function sshKeyReady(rule, cwd, options = {}) {
       loadAttempt: null
     };
   }
-  const agent = resolveSshAgent(cwd);
+  const agent = resolveSshAgent(cwd, {
+    startAgent: options.startAgent !== false
+  });
   let list = agent.list;
   let load = null;
   let output = outputText(list) || "";
@@ -2153,7 +2191,7 @@ function identityFixes(status) {
   if (expected.sshKeyPath && status.ssh.ready !== true) {
     fixes.push({
       kind: "ssh_add",
-      command: [SSH_ADD_BIN, expected.sshKeyPath],
+      command: sshAddPreviewCommand(expected.sshKeyPath),
       cwd: status.cwd,
       reason: "configured SSH key is not confirmed in the agent"
     });
@@ -2161,7 +2199,7 @@ function identityFixes(status) {
   return fixes;
 }
 
-function buildIdentityStatus(input = {}) {
+function buildIdentityStatus(input = {}, options = {}) {
   const cwd = cwdFrom(input);
   const freshness = maybeAutoFetch(input);
   const explicitAccount = requireOptionalLogin(input.githubAccount, "githubAccount");
@@ -2217,7 +2255,10 @@ function buildIdentityStatus(input = {}) {
     }
   }
   const gitRoot = local.checkout.root;
-  const ssh = sshKeyReady(rule, cwd, { autoRepair: Boolean(rule && !local.ambiguous) });
+  const ssh = sshKeyReady(rule, cwd, {
+    autoRepair: options.autoRepairSsh !== false && Boolean(rule && !local.ambiguous),
+    startAgent: options.startSshAgent !== false
+  });
   const expected = rule
     ? {
         githubAccount: rule.githubAccount || null,
@@ -2625,7 +2666,7 @@ function selectedFixes(status, requestedKinds) {
 
 async function githubIdentityFixPreview(input = {}) {
   cleanupApprovals();
-  const status = buildIdentityStatus(input);
+  const status = buildIdentityStatus(input, { autoRepairSsh: false, startSshAgent: false });
   if (status.identity.ambiguous) {
     throw new Error(`GitHub identity selection is ambiguous: ${status.identity.matches.join(", ")}. Fix the local identity rules file at ${status.configFile}.`);
   }
@@ -2701,7 +2742,7 @@ async function githubIdentityFixExecute(input = {}) {
     throw new Error("approvalToken has expired. Run github_identity_fix_preview again.");
   }
   approvals.delete(token);
-  const before = buildIdentityStatus(approval.payload);
+  const before = buildIdentityStatus(approval.payload, { autoRepairSsh: false, startSshAgent: false });
   if (before.identity.ruleId !== approval.plan.ruleId || before.identity.ambiguous) {
     throw new Error("Local identity rule changed after preview. Run github_identity_fix_preview again.");
   }
@@ -2726,7 +2767,7 @@ async function githubIdentityFixExecute(input = {}) {
     const [bin, ...args] = fix.command;
     const result = bin === GIT_BIN
       ? runGit(args, { cwd: fix.cwd, maxBuffer: 20 * 1024 * 1024 })
-      : runSshAdd(args, { cwd: fix.cwd, maxBuffer: 20 * 1024 * 1024 });
+      : runSshAddIdentityFix(fix);
     results.push({
       kind: fix.kind,
       command: result.command,
@@ -2736,7 +2777,7 @@ async function githubIdentityFixExecute(input = {}) {
       stderr: truncate(result.stderr, DEFAULT_MAX_BYTES)
     });
   }
-  const after = buildIdentityStatus(approval.payload);
+  const after = buildIdentityStatus(approval.payload, { autoRepairSsh: false, startSshAgent: false });
   return {
     operation: "identity_fix",
     cwd: approval.plan.cwd,
@@ -4691,22 +4732,17 @@ function buildMutation(operation, payload = {}, cwd = process.cwd(), githubAccou
       const number = requirePositiveInteger(payload.number, "payload.number");
       const event = normalizePullRequestReviewEvent(payload.event);
       const hasComments = payload.comments != null;
-      const commitId = normalizeOptionalPullRequestReviewCommitId(
-        payload.commitId ?? payload.commit_id,
-        hasComments
-      );
+      const commitId = normalizePullRequestReviewCommitId(payload.commitId ?? payload.commit_id);
       if (hasComments && event !== "COMMENT") {
         throw new Error("payload.comments can only be used with COMMENT pull_request_review events. Omit comments for top-level APPROVE or REQUEST_CHANGES reviews.");
       }
       const comments = hasComments ? normalizePullRequestReviewComments(payload.comments) : [];
       const body = normalizePullRequestReviewBody(payload.body, event);
       const requestBody = {
+        commit_id: commitId,
         event,
         body
       };
-      if (commitId != null) {
-        requestBody.commit_id = commitId;
-      }
       if (hasComments) {
         requestBody.comments = comments;
       }
@@ -5320,21 +5356,27 @@ function matchReviewCommentReadback(expected, comments, index, usedIndexes) {
 
 function pullRequestReviewReadbackEvidence(plan, review) {
   const expectedState = expectedPullRequestReviewState(plan.requestBody.event);
-  const postedState = review.state || null;
-  const postedBody = review.body || "";
+  const expectedCommitId = plan.requestBody.commit_id || null;
+  const postedState = review?.state || null;
+  const postedBody = review == null ? null : (review.body || "");
+  const postedCommitId = review?.commit_id || review?.commitId || null;
   const bodyMatches = postedBody === plan.requestBody.body;
   const stateMatches = postedState === expectedState;
+  const commitMatches = postedCommitId === expectedCommitId;
   return {
     expectedState,
+    expectedCommitId,
     state: postedState,
     body: postedBody,
+    commitId: postedCommitId,
     bodyMatches,
     stateMatches,
-    exactMatch: bodyMatches && stateMatches
+    commitMatches,
+    exactMatch: bodyMatches && stateMatches && commitMatches
   };
 }
 
-function pullRequestReviewBaseResponse(plan, result, review, input = {}) {
+function pullRequestReviewBaseResponse(plan, result, review, input = {}, reviewReadback = null) {
   return {
     operation: "pull_request_review",
     repository: plan.repo,
@@ -5355,7 +5397,7 @@ function pullRequestReviewBaseResponse(plan, result, review, input = {}) {
       state: review.state || null,
       body: review.body || null
     },
-    reviewReadback: pullRequestReviewReadbackEvidence(plan, review),
+    reviewReadback: pullRequestReviewReadbackEvidence(plan, reviewReadback),
     authSelection: result.auth || null,
     stdout: truncate(result.stdout, input.maxBytes || DEFAULT_MAX_BYTES),
     stderr: truncate(result.stderr, input.maxBytes || DEFAULT_MAX_BYTES),
@@ -5385,10 +5427,10 @@ async function executePullRequestReviewPlan(plan, input = {}) {
       ]
     };
   }
-  let readbackResult;
+  let reviewReadbackResult;
   try {
-    readbackResult = runGh(
-      ["api", `repos/${plan.repo}/pulls/${plan.number}/reviews/${review.id}/comments?per_page=100`],
+    reviewReadbackResult = runGh(
+      ["api", `repos/${plan.repo}/pulls/${plan.number}/reviews/${review.id}`],
       {
         cwd: plan.cwd,
         maxBuffer: 20 * 1024 * 1024,
@@ -5412,19 +5454,51 @@ async function executePullRequestReviewPlan(plan, input = {}) {
         status: error?.status ?? null
       },
       warnings: [
+        "The review was created, but review readback failed. Do not retry blindly because retrying may duplicate or overwrite public review state."
+      ]
+    };
+  }
+  const reviewReadback = reviewReadbackResult.data || {};
+  let commentReadbackResult;
+  try {
+    commentReadbackResult = runGh(
+      ["api", `repos/${plan.repo}/pulls/${plan.number}/reviews/${review.id}/comments?per_page=100`],
+      {
+        cwd: plan.cwd,
+        maxBuffer: 20 * 1024 * 1024,
+        repoName: plan.repo,
+        githubAccount: plan.githubAccount,
+        requireScopedAuth: true,
+        json: true
+      }
+    );
+  } catch (error) {
+    return {
+      ...pullRequestReviewBaseResponse(plan, result, review, input, reviewReadback),
+      readbackVerified: false,
+      postedCommentCount: null,
+      comments: [],
+      readbackError: {
+        message: error instanceof Error ? error.message : String(error),
+        command: error?.command || null,
+        stdout: truncate(error?.stdout || "", input.maxBytes || DEFAULT_MAX_BYTES),
+        stderr: truncate(error?.stderr || "", input.maxBytes || DEFAULT_MAX_BYTES),
+        status: error?.status ?? null
+      },
+      warnings: [
         "The review was created, but comment readback failed. Do not retry blindly because retrying may duplicate public review comments."
       ]
     };
   }
-  const readbackComments = Array.isArray(readbackResult.data) ? readbackResult.data : [];
+  const readbackComments = Array.isArray(commentReadbackResult.data) ? commentReadbackResult.data : [];
   const expectedComments = plan.requestBody.comments || [];
   const usedIndexes = new Set();
   const comments = expectedComments.map((expected, index) =>
     matchReviewCommentReadback(expected, readbackComments, index, usedIndexes)
   );
-  const reviewReadback = pullRequestReviewReadbackEvidence(plan, review);
+  const reviewReadbackEvidence = pullRequestReviewReadbackEvidence(plan, reviewReadback);
   const readbackVerified = (
-    reviewReadback.exactMatch
+    reviewReadbackEvidence.exactMatch
     &&
     readbackComments.length >= expectedComments.length
     && comments.every((comment) => comment.exactMatch)
@@ -5433,15 +5507,21 @@ async function executePullRequestReviewPlan(plan, input = {}) {
     ? []
     : ["The review or one or more review comments could not be verified exactly in readback. Inspect the returned evidence before taking follow-up action."];
   return {
-    ...pullRequestReviewBaseResponse(plan, result, review, input),
+    ...pullRequestReviewBaseResponse(plan, result, review, input, reviewReadback),
     readbackVerified,
     postedCommentCount: readbackComments.length,
     comments,
+    reviewReadbackCommand: {
+      executable: GH_BIN,
+      args: reviewReadbackResult.command.slice(1),
+      cwd: reviewReadbackResult.cwd,
+      shellPreview: commandPreview(reviewReadbackResult.command)
+    },
     readbackCommand: {
       executable: GH_BIN,
-      args: readbackResult.command.slice(1),
-      cwd: readbackResult.cwd,
-      shellPreview: commandPreview(readbackResult.command)
+      args: commentReadbackResult.command.slice(1),
+      cwd: commentReadbackResult.cwd,
+      shellPreview: commandPreview(commentReadbackResult.command)
     },
     warnings
   };

@@ -425,6 +425,30 @@ if (args[0] === "api" && args[1] === "--method" && args[2] === "POST" && args[3]
     node_id: "PRR_80",
     body: payload.body || "",
     state: reviewStates[payload.event] || "COMMENTED",
+    commit_id: payload.commit_id || null,
+    html_url: "https://github.com/owner/repo/pull/1#pullrequestreview-80"
+  }));
+  process.exit(0);
+}
+if (args[0] === "api" && args[1] === "repos/owner/repo/pulls/1/reviews/80") {
+  const current = state();
+  if (current.reviewObjectReadbackMode === "fail") {
+    console.error("review object readback failed after review creation");
+    process.exit(1);
+  }
+  const reviewStates = {
+    COMMENT: "COMMENTED",
+    APPROVE: "APPROVED",
+    REQUEST_CHANGES: "CHANGES_REQUESTED"
+  };
+  const reviews = readJsonl(process.env.FAKE_REVIEW_LOG);
+  const payload = reviews.at(-1)?.payload || {};
+  console.log(JSON.stringify({
+    id: 80,
+    node_id: "PRR_80",
+    body: current.reviewObjectReadbackMode === "mismatch" ? "changed body" : (payload.body || ""),
+    state: current.reviewObjectReadbackMode === "mismatch" ? "COMMENTED" : (reviewStates[payload.event] || "COMMENTED"),
+    commit_id: current.reviewObjectReadbackMode === "mismatch" ? "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" : (payload.commit_id || null),
     html_url: "https://github.com/owner/repo/pull/1#pullrequestreview-80"
   }));
   process.exit(0);
@@ -1094,7 +1118,7 @@ async function main() {
   const identityFixPreviewJson = jsonContent(identityFixPreview);
   if (
     !identityFixPreviewJson.approvalToken
-    || identityFixPreviewJson.fixes?.map((fix) => fix.kind).join(",") !== "git_email,gpg_format,signing_key"
+    || identityFixPreviewJson.fixes?.map((fix) => fix.kind).join(",") !== "git_email,gpg_format,signing_key,ssh_add"
   ) {
     throw new Error("github_identity_fix_preview did not preview all required local identity fixes");
   }
@@ -1112,6 +1136,16 @@ async function main() {
   ));
   if (!fixCommands.some((call) => call.bin === "git" && call.args[1] === "user.signingkey")) {
     throw new Error("github_identity_fix_execute did not apply the configured signing key");
+  }
+  const identityFixSshAdd = fixCommands.find((call) => (
+    call.bin === "ssh-add"
+    && call.args.includes(join(fakeBinDir, "id_owner"))
+  ));
+  if (!identityFixSshAdd?.sshAuthSock) {
+    throw new Error("github_identity_fix_execute did not run ssh-add with a resolved SSH_AUTH_SOCK");
+  }
+  if (process.platform === "darwin" && !identityFixSshAdd.args.includes("--apple-use-keychain")) {
+    throw new Error("github_identity_fix_execute did not use the macOS keychain-aware ssh-add path");
   }
   fs.writeFileSync(stateFile, JSON.stringify({
     detached: false,
@@ -1694,6 +1728,19 @@ async function main() {
       payload: {
         repo: "owner/repo",
         number: 1,
+        event: "APPROVE",
+        body: "Top-level reviews still need a commit id."
+      }
+    },
+    "payload.commitId is required"
+  );
+  await expectToolError(
+    "github_mutation_preview",
+    {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
         commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         comments: [{ path: "src/app.py", line: 1, body: "Missing review summary" }]
       }
@@ -1714,6 +1761,7 @@ async function main() {
         payload: {
           repo: "owner/repo",
           number: 1,
+          commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           event: topLevelReview.event,
           body: topLevelReview.body
         }
@@ -1726,7 +1774,7 @@ async function main() {
       || topLevelPreviewJson.request?.endpoint !== "repos/owner/repo/pulls/1/reviews"
       || topLevelPreviewJson.requestBody?.event !== topLevelReview.event
       || topLevelPreviewJson.requestBody?.body !== topLevelReview.body
-      || Object.hasOwn(topLevelPreviewJson.requestBody || {}, "commit_id")
+      || topLevelPreviewJson.requestBody?.commit_id !== "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       || Object.hasOwn(topLevelPreviewJson.requestBody || {}, "comments")
       || !topLevelPreviewJson.command?.args?.includes("--input")
     ) {
@@ -1746,7 +1794,7 @@ async function main() {
     if (
       topLevelPayload?.event !== topLevelReview.event
       || topLevelPayload?.body !== topLevelReview.body
-      || Object.hasOwn(topLevelPayload || {}, "commit_id")
+      || topLevelPayload?.commit_id !== "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       || Object.hasOwn(topLevelPayload || {}, "comments")
     ) {
       throw new Error("pull_request_review execute did not pass the expected top-level JSON payload on stdin");
@@ -1755,6 +1803,7 @@ async function main() {
       topLevelExecuteJson.review?.state !== topLevelReview.expectedState
       || topLevelExecuteJson.reviewReadback?.stateMatches !== true
       || topLevelExecuteJson.reviewReadback?.bodyMatches !== true
+      || topLevelExecuteJson.reviewReadback?.commitMatches !== true
       || topLevelExecuteJson.readbackVerified !== true
       || topLevelExecuteJson.postedCommentCount !== 0
       || topLevelExecuteJson.comments?.length !== 0
@@ -1762,6 +1811,47 @@ async function main() {
       throw new Error("pull_request_review execute did not return top-level review readback evidence");
     }
   }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292,
+    reviewObjectReadbackMode: "mismatch"
+  }), "utf8");
+  const mismatchedTopLevelPreview = await request("tools/call", {
+    name: "github_mutation_preview",
+    arguments: {
+      operation: "pull_request_review",
+      payload: {
+        repo: "owner/repo",
+        number: 1,
+        commitId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        event: "APPROVE",
+        body: "Looks good."
+      }
+    }
+  });
+  const mismatchedTopLevelExecute = await request("tools/call", {
+    name: "github_mutation_execute",
+    arguments: {
+      approvalToken: jsonContent(mismatchedTopLevelPreview).approvalToken
+    }
+  });
+  const mismatchedTopLevelExecuteJson = jsonContent(mismatchedTopLevelExecute);
+  if (
+    mismatchedTopLevelExecuteJson.writeSucceeded !== true
+    || mismatchedTopLevelExecuteJson.readbackVerified !== false
+    || mismatchedTopLevelExecuteJson.reviewReadback?.exactMatch !== false
+    || !mismatchedTopLevelExecuteJson.warnings?.[0]?.includes("could not be verified exactly")
+  ) {
+    throw new Error("pull_request_review execute should report review object readback mismatch evidence");
+  }
+  fs.writeFileSync(stateFile, JSON.stringify({
+    detached: false,
+    head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    prListMode: "match",
+    prNumber: 292
+  }), "utf8");
 
   const callsBeforeBatchPreview = readCommandLog().length;
   const batchPreview = await request("tools/call", {
@@ -1817,12 +1907,13 @@ async function main() {
     .slice(callsBeforeBatchExecute)
     .filter((call) => call.bin === "gh" && call.args[0] === "api");
   if (
-    batchCalls.length !== 2
+    batchCalls.length !== 3
     || batchCalls[0].args[1] !== "--method"
     || batchCalls[0].args[2] !== "POST"
     || batchCalls[0].args[3] !== "repos/owner/repo/pulls/1/reviews"
     || !batchCalls[0].args.includes("--input")
-    || batchCalls[1].args[1] !== "repos/owner/repo/pulls/1/reviews/80/comments?per_page=100"
+    || batchCalls[1].args[1] !== "repos/owner/repo/pulls/1/reviews/80"
+    || batchCalls[2].args[1] !== "repos/owner/repo/pulls/1/reviews/80/comments?per_page=100"
   ) {
     throw new Error("pull_request_review execute did not create one review and read back its comments");
   }
@@ -1838,6 +1929,7 @@ async function main() {
     batchExecuteJson.review?.id !== 80
     || batchExecuteJson.readbackVerified !== true
     || batchExecuteJson.postedCommentCount !== 2
+    || batchExecuteJson.reviewReadback?.commitMatches !== true
     || batchExecuteJson.comments?.some((comment) => comment.exactMatch !== true)
   ) {
     throw new Error("pull_request_review execute did not return review readback evidence");
