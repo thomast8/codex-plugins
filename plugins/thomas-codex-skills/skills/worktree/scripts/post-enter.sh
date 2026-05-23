@@ -4,13 +4,11 @@
 #
 # Runs INSIDE the worktree (cwd is assumed to already be the worktree root).
 #
-# Does three things:
+# Does two things:
 #   1. git pull --ff-only   (if the current branch tracks a remote)
 #   2. Copies gitignored dev files (.env, .env.local, .env.*.local, .envrc by
 #      default) from the main repo root, so the worktree is immediately
 #      runnable without re-setup.
-#   3. Reuses an exact-match GitNexus index when possible. If no matching index
-#      exists, defers indexing until graph tools are actually needed.
 #
 # Usage:
 #   post-enter.sh <main_root>
@@ -26,7 +24,6 @@
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 MAIN_ROOT="${1:-}"
 if [ -z "$MAIN_ROOT" ] || [ ! -d "$MAIN_ROOT" ]; then
   printf 'usage: post-enter.sh <main_root>\n' >&2
@@ -100,39 +97,12 @@ for pattern in "${COPY_ARR[@]}"; do
 done
 shopt -u nullglob
 
-# --- ensure GitNexus has the cheapest usable state for this worktree ---
-GITNEXUS_MSG="not run"
-run_gitnexus_index() {
-  local helper="$SCRIPT_DIR/gitnexus-worktree-index.mjs"
-  if command -v node >/dev/null 2>&1 && [ -f "$helper" ]; then
-    GITNEXUS_MSG="$(node "$helper" --repo "$WT_PATH" --source "$MAIN_ROOT" 2>/dev/null || true)"
-    [ -n "$GITNEXUS_MSG" ] || GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
-    return
-  fi
-
-  local head_sha indexed_sha
-  head_sha="$(git -C "$WT_PATH" rev-parse HEAD 2>/dev/null || true)"
-  indexed_sha=""
-  if [ -f "$WT_PATH/.gitnexus/meta.json" ] && command -v jq >/dev/null 2>&1; then
-    indexed_sha="$(jq -r '.lastCommit // empty' "$WT_PATH/.gitnexus/meta.json" 2>/dev/null || true)"
-  fi
-
-  if [ -n "$head_sha" ] && [ "$indexed_sha" = "$head_sha" ]; then
-    GITNEXUS_MSG="already current"
-    return
-  fi
-
-  GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
-}
-run_gitnexus_index
-
 # --- hint block ---
 printf 'mode:   worktree (EnterWorktree + hook when available)\n'
 printf 'branch: %s\n' "$BRANCH"
 printf 'path:   %s\n' "$WT_PATH"
 printf 'pull:   %s\n' "$PULL_MSG"
 printf 'copied: %s\n' "${COPIED:-none}"
-printf 'gitnexus: %s\n' "$GITNEXUS_MSG"
 [ -n "$SKIPPED" ] && printf 'skipped (already present): %s\n' "$SKIPPED"
 printf '\n'
 printf 'Session is now anchored in the worktree. The desktop app bottom bar\n'

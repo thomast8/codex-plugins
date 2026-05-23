@@ -9,7 +9,6 @@ import path from "node:path";
 import process from "node:process";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { ensureGitNexusWorktreeIndex } from "./gitnexus-worktree-index.mjs";
 
 const CLIENT_INFO = {
   name: "codex-worktree-rebind",
@@ -324,14 +323,6 @@ function copyDevFiles(sourceRoot, worktreePath) {
   return { copied, skipped };
 }
 
-function refreshGitNexus(worktreePath, sourceRoot) {
-  try {
-    return ensureGitNexusWorktreeIndex({ repoPath: worktreePath, sourceRoot }).message;
-  } catch (error) {
-    return `deferred - run gitnexus analyze --skip-agents-md when graph is needed (${error.message})`;
-  }
-}
-
 export function prepareWorktree({ sourceRoot, branch, worktreePath, dryRun = false }) {
   const registered = listRegisteredWorktrees(sourceRoot);
   const alreadyRegistered = registered.some((candidate) => samePath(candidate, worktreePath));
@@ -345,7 +336,6 @@ export function prepareWorktree({ sourceRoot, branch, worktreePath, dryRun = fal
       pull: "dry-run",
       copied: [],
       skipped: [],
-      gitnexus: "dry-run",
       warning: null,
     };
   }
@@ -362,7 +352,6 @@ export function prepareWorktree({ sourceRoot, branch, worktreePath, dryRun = fal
 
   const pull = pullFastForward(worktreePath);
   const { copied, skipped } = copyDevFiles(sourceRoot, worktreePath);
-  const gitnexus = refreshGitNexus(worktreePath, sourceRoot);
 
   return {
     prepared: true,
@@ -374,7 +363,6 @@ export function prepareWorktree({ sourceRoot, branch, worktreePath, dryRun = fal
     pull,
     copied,
     skipped,
-    gitnexus,
     warning: addInfo.warning,
   };
 }

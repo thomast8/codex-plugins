@@ -16,14 +16,9 @@
 # Default: `.env .env.local .env.*.local .envrc`
 # Override per-repo by creating <repo>/.codex/worktree.conf with a line:
 #   WORKTREE_COPY_GLOBS=".env .env.local .env.test .envrc direnv/envrc"
-#
-# Worktree mode also asks the shared GitNexus helper to reuse an exact-commit
-# index when possible. If no reusable index exists, expensive indexing is
-# deferred until graph tools are needed.
 
 set -uo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 MODE="${1:-}"
 BRANCH="${2:-}"
 ORIG_ROOT="${3:-}"
@@ -160,33 +155,12 @@ case "$MODE" in
     done
     shopt -u nullglob
 
-    # Ensure GitNexus has the cheapest usable state for this worktree.
-    GITNEXUS_MSG="not run"
-    HELPER="$SCRIPT_DIR/gitnexus-worktree-index.mjs"
-    if command -v node >/dev/null 2>&1 && [ -f "$HELPER" ]; then
-      GITNEXUS_MSG="$(node "$HELPER" --repo "$WT_PATH" --source "$ORIG_ROOT" 2>/dev/null || true)"
-      [ -n "$GITNEXUS_MSG" ] || GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
-    else
-      HEAD_SHA="$(git -C "$WT_PATH" rev-parse HEAD 2>/dev/null || true)"
-      INDEXED_SHA=""
-      if [ -f "$WT_PATH/.gitnexus/meta.json" ] && command -v jq >/dev/null 2>&1; then
-        INDEXED_SHA="$(jq -r '.lastCommit // empty' "$WT_PATH/.gitnexus/meta.json" 2>/dev/null || true)"
-      fi
-
-      if [ -n "$HEAD_SHA" ] && [ "$INDEXED_SHA" = "$HEAD_SHA" ]; then
-        GITNEXUS_MSG="already current"
-      else
-        GITNEXUS_MSG="deferred - run gitnexus analyze --skip-agents-md when graph is needed"
-      fi
-    fi
-
     # --- emit hint block ---
     printf 'mode:   worktree%s\n' "$( [ $REUSED -eq 1 ] && printf ' (reused existing)' )"
     printf 'branch: %s\n' "$BRANCH"
     printf 'path:   %s\n' "$WT_PATH"
     printf 'pull:   %s\n' "$PULL_MSG"
     printf 'copied: %s\n' "${COPIED:-none}"
-    printf 'gitnexus: %s\n' "$GITNEXUS_MSG"
     [ -n "$SKIPPED" ] && printf 'skipped (already present): %s\n' "$SKIPPED"
     [ -n "${DETACHED_WARN:-}" ] && printf 'WARNING: %s\n' "$DETACHED_WARN"
     printf '\n'

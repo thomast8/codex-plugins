@@ -1,6 +1,6 @@
 ---
 name: worktree
-description: "Create a git worktree or switch checkout for a PR number, branch name, or an interactively picked 'live' branch (your open PRs + PRs needing your review, Graphite-aware). Worktree mode pulls latest from remote, copies gitignored dev files, and reuses an exact-commit GitNexus index when one already exists. Use when the user says '/worktree', '/worktree 123', '/worktree feature/my-branch', or wants to hop onto an existing PR without losing their current checkout."
+description: "Create a git worktree or switch checkout for a PR number, branch name, or an interactively picked 'live' branch (your open PRs + PRs needing your review, Graphite-aware). Worktree mode pulls latest from remote and copies gitignored dev files. Use when the user says '/worktree', '/worktree 123', '/worktree feature/my-branch', or wants to hop onto an existing PR without losing their current checkout."
 ---
 
 # Create Git Worktree / Switch Checkout
@@ -17,7 +17,7 @@ relative to this `SKILL.md` in the installed plugin copy.
   `WorktreeCreate` hook and switches the session's project directory into it.
   This is how the desktop app's bottom bar follows the worktree. The hook handles
   existing-branch checkout, new-branch creation, and reuse of existing worktrees.
-- `post-enter.sh <main_root>` - runs INSIDE the new worktree after `EnterWorktree`. Pulls latest from the remote, copies gitignored dev files from main, and asks the shared GitNexus helper to reuse an exact-commit index when available. It defers expensive indexing when no reusable index exists.
+- `post-enter.sh <main_root>` - runs INSIDE the new worktree after `EnterWorktree`. Pulls latest from the remote and copies gitignored dev files from main.
 - `rebind-current-thread.mjs --branch <branch> --source <repo-root> [--thread-id <id>] [--dry-run] [--open-app-fallback]` - probe-first fallback for runtimes without `EnterWorktree`. It prepares or reuses a worktree under Codex's managed worktree area, then tries the supported app-server protocol. It only reports `rebound` when app-server returns the worktree cwd.
 - `execute.sh switch <branch> <main_root> <is_graphite>` - used ONLY for "switch checkout" mode, not for worktree creation.
 
@@ -105,7 +105,6 @@ checkout, and session switching. You only have to do three steps:
 2. **Call `post-enter.sh` with the main repo path as its arg.** The main repo path is `gather.sh`'s `orig_root` field. This runs inside the new worktree and does:
    - `git pull --ff-only` if the branch tracks a remote
    - Copy gitignored dev files (`.env*`, `.envrc`) from main so the worktree is immediately runnable
-   - Reuse an exact-commit GitNexus index from another worktree when available, otherwise defer expensive indexing until graph tools are needed
    - Print a hint block
 
    ```bash
@@ -126,7 +125,7 @@ probe helper before using legacy manual discipline:
 
 Parse the JSON result and handle it honestly:
 
-- `rebound`: app-server confirmed the thread cwd is the worktree. The helper has already prepared the worktree, copied approved dev files, and reused or deferred the GitNexus index. Relay the result and continue from the worktree.
+- `rebound`: app-server confirmed the thread cwd is the worktree. The helper has already prepared the worktree and copied approved dev files. Relay the result and continue from the worktree.
 - `prepared_only`: the worktree is ready, but app-server did not accept the cwd change. Use the returned `worktreePath` and the "Legacy rebind discipline" section.
 - `unsupported`: no reachable app-server endpoint had this thread loaded, or `CODEX_THREAD_ID` was missing. If `preparation.prepared` is true, use the returned `worktreePath` with legacy discipline.
 - `fallback_opened`: the helper opened Codex Desktop at the prepared worktree because `--open-app-fallback` was explicitly used. This is not a same-thread rebind.
@@ -183,7 +182,7 @@ This is exactly the discipline the legacy manual-worktree flow required, and it'
 
 ## Configuring copied dev files
 
-`execute.sh` and `post-enter.sh` copy gitignored files matching a whitelist of globs into the new worktree so it's immediately runnable. Default globs: `.env .env.local .env.*.local .envrc`. They also call the shared GitNexus helper. If another worktree already has an index for the same commit, the helper copies that index and registers the new worktree. If no exact-match index exists, indexing is deferred so worktree creation does not burn CPU.
+`execute.sh` and `post-enter.sh` copy gitignored files matching a whitelist of globs into the new worktree so it's immediately runnable. Default globs: `.env .env.local .env.*.local .envrc`.
 
 **Per-repo override**: create `<repo>/.codex/worktree.conf` with a single line:
 ```sh
