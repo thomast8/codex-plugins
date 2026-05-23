@@ -30,7 +30,8 @@ description: Trace bugs through call chains using knowledge graph
 ```
 1. mcp__gitnexus__query({query: "<error or symptom>"})       → Find related execution flows
 2. mcp__gitnexus__context({name: "<suspect>"})               → See callers/callees/processes
-3. mcp__gitnexus__cypher({query: "MATCH path..."})           → Custom traces if needed
+3. READ gitnexus://repo/{name}/process/{name}                → Trace execution flow
+4. mcp__gitnexus__cypher({query: "MATCH path..."})           → Custom traces if needed
 ```
 
 > If the index is stale, run `gitnexus analyze --skip-agents-md`.
@@ -42,6 +43,7 @@ description: Trace bugs through call chains using knowledge graph
 - [ ] mcp__gitnexus__query for error text or related code
 - [ ] Identify the suspect function from returned processes
 - [ ] mcp__gitnexus__context to see callers and callees
+- [ ] Trace execution flow via process resource if applicable
 - [ ] mcp__gitnexus__cypher for custom call chain traces if needed
 - [ ] Read source files to confirm root cause
 ```
@@ -89,5 +91,8 @@ RETURN [n IN nodes(path) | n.name] AS chain
 2. mcp__gitnexus__context({name: "validatePayment"})
    → Outgoing calls: verifyCard, fetchRates (external API!)
 
-3. Root cause: fetchRates calls external API without proper timeout
+3. READ gitnexus://repo/my-app/process/CheckoutFlow
+   → Step 3: validatePayment → calls fetchRates (external)
+
+4. Root cause: fetchRates calls external API without proper timeout
 ```

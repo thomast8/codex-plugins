@@ -31,8 +31,9 @@ description: Analyze blast radius before making code changes
 
 ```
 1. mcp__gitnexus__impact({target: "X", direction: "upstream"})  → What depends on this
-2. mcp__gitnexus__detect_changes()                              → Map current git changes to affected flows
-3. Assess risk and report to user
+2. READ gitnexus://repo/{name}/processes                        → Check affected execution flows
+3. mcp__gitnexus__detect_changes()                              → Map current git changes to affected flows
+4. Assess risk and report to user
 ```
 
 > If the index is stale, run `gitnexus analyze --skip-agents-md`.
@@ -43,6 +44,7 @@ description: Analyze blast radius before making code changes
 - [ ] mcp__gitnexus__impact({target, direction: "upstream"}) to find dependents
 - [ ] Review d=1 items first (these WILL BREAK)
 - [ ] Check high-confidence (>0.8) dependencies
+- [ ] READ processes to check affected execution flows
 - [ ] mcp__gitnexus__detect_changes() for pre-commit check
 - [ ] Assess risk level and report to user
 ```
@@ -99,5 +101,8 @@ mcp__gitnexus__detect_changes({scope: "staged"})
    → d=1: loginHandler, apiMiddleware (WILL BREAK)
    → d=2: authRouter, sessionManager (LIKELY AFFECTED)
 
-2. Risk: 2 direct callers, 2 processes = MEDIUM
+2. READ gitnexus://repo/my-app/processes
+   → LoginFlow and TokenRefresh touch validateUser
+
+3. Risk: 2 direct callers, 2 processes = MEDIUM
 ```

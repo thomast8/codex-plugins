@@ -31,7 +31,7 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 1. Check GitNexus freshness with `mcp__gitnexus__list_repos`
 2. mcp__gitnexus__query({query: "<what you want to understand>"})
 3. mcp__gitnexus__context({name: "<symbol>"})
-4. mcp__gitnexus__impact({target: "<symbol>", direction: "upstream"}) if needed
+4. READ gitnexus://repo/{name}/process/{name}      → Trace full execution flow
 ```
 
 > If the index is stale, run `gitnexus analyze --skip-agents-md`.
@@ -43,6 +43,7 @@ description: Navigate unfamiliar code using GitNexus knowledge graph
 - [ ] mcp__gitnexus__query for the concept you want to understand
 - [ ] Review returned processes (execution flows)
 - [ ] mcp__gitnexus__context on key symbols for callers/callees
+- [ ] READ process resource for full execution traces
 - [ ] Read source files for implementation details
 ```
 
