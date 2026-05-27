@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "name": "thomas-codex-workflows",
   "displayName": "Thomas Codex Workflows",
-  "summary": "Personal Codex hooks for GitNexus upkeep, PR creation reminders, and worktree lifecycle support.",
-  "purpose": "Use this plugin to make ordinary Codex sessions safer and more context-aware through hooks that run around shell commands, search commands, session start, and worktree create/remove events.",
+  "summary": "Personal Codex hooks for GitNexus upkeep, Warp CWD updates, PR creation reminders, and worktree lifecycle support.",
+  "purpose": "Use this plugin to make ordinary Codex sessions safer and more context-aware through hooks that run around shell commands, search commands, post-tool Warp updates, session start, and worktree create/remove events.",
   "whenToUse": [
     "Keep GitNexus indexes fresh and inject graph context during code exploration.",
     "Prepare and clean up worktree metadata during worktree lifecycle events."
@@ -12,6 +12,7 @@
     "skills": [],
     "mcpServers": [],
     "hooks": [
+      "PostToolUse",
       "PreToolUse",
       "SessionStart",
       "WorktreeCreate",
