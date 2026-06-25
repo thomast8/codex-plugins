@@ -1,5 +1,4 @@
 {
-  "description": "Personal Codex repo-safety hooks. Uses CLAUDE_PLUGIN_ROOT because Codex plugin hooks currently expose that compatibility variable.",
   "hooks": {
     "PreToolUse": [
       {
