@@ -1,7 +1,7 @@
 {
   "name": "thomas-codex-skills",
-  "version": "0.1.0",
-  "description": "Personal Codex skills packaged as one marketplace plugin for Git workflows, reviews, debugging, frontend design, and GitNexus-assisted code navigation.",
+  "version": "0.2.0",
+  "description": "Personal Codex skills packaged as one marketplace plugin for Git workflows, reviews, debugging, and frontend design.",
   "author": {
     "name": "Thomas Tiotto",
     "url": "https://github.com/thomast8"
@@ -13,7 +13,6 @@
     "codex",
     "skills",
     "workflow",
-    "gitnexus",
     "review",
     "worktree"
   ],
@@ -21,7 +20,7 @@
   "interface": {
     "displayName": "Thomas Codex Skills",
     "shortDescription": "Personal Codex skills bundle",
-    "longDescription": "Installs Thomas's reusable Codex skills as one marketplace plugin, including worktree workflows, review gates, reconciliation, debugging, frontend design, reviewer selection, and GitNexus-assisted code exploration.",
+    "longDescription": "Installs Thomas's reusable Codex skills as one marketplace plugin, including worktree workflows, review gates, reconciliation, debugging, frontend design, and reviewer selection.",
     "developerName": "Thomas Tiotto",
     "category": "Productivity",
     "capabilities": [
@@ -31,8 +30,7 @@
     ],
     "defaultPrompt": [
       "Use the worktree skill",
-      "Run the review-code skill",
-      "Use GitNexus to explore this repo"
+      "Run the review-code skill"
     ],
     "brandColor": "#0F766E",
     "websiteURL": "https://github.com/thomast8/codex-plugins/tree/main/plugins/thomas-codex-skills",

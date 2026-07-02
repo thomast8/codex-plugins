@@ -2,17 +2,6 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Grep|Glob",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gitnexus-context.sh\"",
-            "timeout": 8000,
-            "statusMessage": "Enriching with GitNexus graph context..."
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -52,17 +41,6 @@
             "type": "command",
             "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/worktree-remove.sh\"",
             "statusMessage": "Cleaning worktree metadata"
-          }
-        ]
-      }
-    ],
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gitnexus-init.sh\"",
-            "statusMessage": "Checking GitNexus index..."
           }
         ]
       }

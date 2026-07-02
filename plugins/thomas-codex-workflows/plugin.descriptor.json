@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "name": "thomas-codex-workflows",
   "displayName": "Thomas Codex Workflows",
-  "summary": "Personal Codex hooks for GitNexus upkeep, Warp CWD updates, PR creation reminders, and worktree lifecycle support.",
-  "purpose": "Use this plugin to make ordinary Codex sessions safer and more context-aware through hooks that run around shell commands, search commands, post-tool Warp updates, session start, and worktree create/remove events.",
+  "summary": "Personal Codex hooks for repo safety, Warp CWD updates, PR creation reminders, and worktree lifecycle support.",
+  "purpose": "Use this plugin to make ordinary Codex sessions safer through hooks that run around shell commands, post-tool Warp updates, and worktree create/remove events.",
   "whenToUse": [
-    "Keep GitNexus indexes fresh and inject graph context during code exploration.",
+    "Guard risky shell commands and remind about review gates before PR creation.",
     "Prepare and clean up worktree metadata during worktree lifecycle events."
   ],
   "surfaces": {
@@ -14,18 +14,16 @@
     "hooks": [
       "PostToolUse",
       "PreToolUse",
-      "SessionStart",
       "WorktreeCreate",
       "WorktreeRemove"
     ]
   },
   "safety": {
     "publicSafe": true,
-    "authModel": "Uses local command state such as git, gh, and GitNexus without publishing credentials.",
+    "authModel": "Uses local command state such as git and gh without publishing credentials.",
     "writeModel": "Hooks may block risky commands or update local worktree metadata, but do not publish remote changes by themselves.",
     "excludedState": [
       "GitHub auth tokens",
-      "GitNexus local indexes",
       "project memories",
       "logs",
       "session state"
@@ -33,7 +31,6 @@
   },
   "installNotes": [
     "Hooks rely on the Codex compatibility variable for plugin root resolution.",
-    "The GitNexus hooks intentionally pass embeddings and skip AGENTS.md injection.",
     "This plugin is machine-local behavior, not a source of secrets or project memory."
   ]
 }
