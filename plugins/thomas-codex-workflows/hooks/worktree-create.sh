@@ -22,6 +22,52 @@ mkdir -p "$(dirname "$LOG")"
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"; }
 die() { log "ERROR: $*"; printf 'worktree-create hook: %s\n' "$*" >&2; exit 1; }
 
+copy_local_path() {
+  local source="$1"
+  local destination="$2"
+
+  if [ -e "$destination" ] || [ -L "$destination" ]; then
+    log "SKIP copy ${source}; destination already exists"
+    return
+  fi
+
+  cp -a "$source" "$destination"
+  log "COPIED ${source} -> ${destination}"
+}
+
+copy_local_runtime() {
+  local destination_root="$1"
+  local candidate
+  local relative
+
+  # Copy only ignored files so tracked examples and templates continue to come
+  # from Git. nullglob keeps unmatched patterns from becoming literal paths.
+  shopt -s nullglob
+  for candidate in \
+    "$repo_root"/.env \
+    "$repo_root"/.env.* \
+    "$repo_root"/.env-* \
+    "$repo_root"/.secrets \
+    "$repo_root"/.secrets.* \
+    "$repo_root"/.secrets-* \
+    "$repo_root"/secrets; do
+    [ -e "$candidate" ] || [ -L "$candidate" ] || continue
+    relative="${candidate#"$repo_root"/}"
+    if git -C "$repo_root" check-ignore -q -- "$relative"; then
+      copy_local_path "$candidate" "$destination_root/$relative"
+    fi
+  done
+  shopt -u nullglob
+
+  if [ -d "$repo_root/.venv" ]; then
+    copy_local_path "$repo_root/.venv" "$destination_root/.venv"
+    if ! uv venv --allow-existing --relocatable "$destination_root/.venv" >> "$LOG" 2>&1; then
+      die "failed to make ${destination_root}/.venv relocatable"
+    fi
+    log "RELOCATED ${destination_root}/.venv"
+  fi
+}
+
 input=$(cat)
 log "STDIN: $input"
 
@@ -34,6 +80,9 @@ name=$(printf '%s' "$input" | jq -r '.name // empty')
 cd "$source_path"
 git rev-parse --show-toplevel >/dev/null 2>&1 || die "not a git repo: $source_path"
 repo_root=$(git rev-parse --show-toplevel)
+if [ -d "$repo_root/.venv" ]; then
+  command -v uv >/dev/null 2>&1 || die "uv is required to relocate a copied .venv"
+fi
 codex_dir="${repo_root}/.codex"
 worktree_base="${codex_dir}/worktrees"
 
@@ -125,6 +174,7 @@ if [ -e "$final_path" ]; then
       ;;
   esac
   if [ "$registered_worktree" -eq 1 ]; then
+    copy_local_runtime "$final_path"
     log "REUSE $final_path (already a registered worktree)"
     printf '%s\n' "$final_path"
     exit 0
@@ -140,6 +190,7 @@ fi
 
 run_worktree_add() {
   if git worktree add "$@" >> "$LOG" 2>&1; then
+    copy_local_runtime "$final_path"
     printf '%s\n' "$final_path"
     log "CREATED $final_path (branch=$branch)"
     exit 0

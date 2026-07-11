@@ -1,7 +1,7 @@
 {
   "name": "thomas-codex-skills",
   "version": "0.2.0",
-  "description": "Personal Codex skills packaged as one marketplace plugin for Git workflows, reviews, debugging, and frontend design.",
+  "description": "Personal Codex skills packaged as one marketplace plugin for Git workflows, reviews, debugging, and reviewer selection.",
   "author": {
     "name": "Thomas Tiotto",
     "url": "https://github.com/thomast8"
@@ -14,13 +14,13 @@
     "skills",
     "workflow",
     "review",
-    "worktree"
+    "git"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Thomas Codex Skills",
     "shortDescription": "Personal Codex skills bundle",
-    "longDescription": "Installs Thomas's reusable Codex skills as one marketplace plugin, including worktree workflows, review gates, reconciliation, debugging, frontend design, and reviewer selection.",
+    "longDescription": "Installs Thomas's reusable Codex skills as one marketplace plugin, including review gates, debugging, and reviewer selection.",
     "developerName": "Thomas Tiotto",
     "category": "Productivity",
     "capabilities": [
@@ -29,7 +29,6 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Use the worktree skill",
       "Run the review-code skill"
     ],
     "brandColor": "#0F766E",

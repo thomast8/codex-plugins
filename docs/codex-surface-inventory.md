@@ -25,13 +25,10 @@ Each plugin also carries `plugin.descriptor.json`, a public-safe explanatory man
 These are installed through the `thomas-codex-skills` plugin and executed from Codex's plugin cache after marketplace refresh. The canonical active skill source lives under `plugins/thomas-codex-skills/skills/`.
 
 - `find-reviewer`
-- `frontend-design`
-- `reconcile`
 - `review-code`
 - `review-thread-response`
 - `systematic-debugging`
 - `unworktree`
-- `worktree`
 
 Archived skills are kept under `archived-skills/` for recovery only and are not installed by default.
 
