@@ -2,20 +2,18 @@
   "schemaVersion": 1,
   "name": "thomas-codex-workflows",
   "displayName": "Thomas Codex Workflows",
-  "summary": "Personal Codex hooks for repo safety, Warp CWD updates, PR creation reminders, and worktree lifecycle support.",
-  "purpose": "Use this plugin to make ordinary Codex sessions safer through hooks that run around shell commands, post-tool Warp updates, and worktree create/remove events.",
+  "summary": "Personal Codex hooks for repo safety, PR creation reminders, and native worktree setup.",
+  "purpose": "Use this plugin to enforce repo safety around shell commands and prepare native Codex worktrees.",
   "whenToUse": [
     "Guard risky shell commands and remind about review gates before PR creation.",
-    "Prepare and clean up worktree metadata during worktree lifecycle events."
+    "Copy ignored secrets, environment files, and a relocatable virtualenv into new native worktrees."
   ],
   "surfaces": {
     "skills": [],
     "mcpServers": [],
     "hooks": [
-      "PostToolUse",
       "PreToolUse",
-      "WorktreeCreate",
-      "WorktreeRemove"
+      "WorktreeCreate"
     ]
   },
   "safety": {

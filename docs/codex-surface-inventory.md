@@ -17,7 +17,7 @@ Each plugin also carries `plugin.descriptor.json`, a public-safe explanatory man
 
 - `azure-devops`: Azure Boards and Azure Repos MCP integration with preview-first writes.
 - `github-local-ops`: local GitHub workflows backed by `gh` and `git`.
-- `thomas-codex-workflows`: personal Codex workflow hooks for repo safety and worktree lifecycle setup.
+- `thomas-codex-workflows`: personal Codex hooks for repo safety and native worktree setup.
 - `thomas-codex-skills`: active personal skills packaged as a single marketplace plugin.
 
 ## Personal Skills
@@ -26,9 +26,6 @@ These are installed through the `thomas-codex-skills` plugin and executed from C
 
 - `find-reviewer`
 - `review-code`
-- `review-thread-response`
-- `systematic-debugging`
-- `unworktree`
 
 Archived skills are kept under `archived-skills/` for recovery only and are not installed by default.
 

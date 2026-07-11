@@ -1,7 +1,7 @@
 {
   "name": "thomas-codex-workflows",
   "version": "0.2.0",
-  "description": "Personal Codex workflow hooks ported from the Claude Code setup: repo safety, PR creation reminders, Warp CWD updates, and worktree hooks.",
+  "description": "Personal Codex hooks for repo safety, PR creation reminders, and native worktree setup.",
   "author": {
     "name": "Thomas Tiotto",
     "url": "https://github.com/thomast8"

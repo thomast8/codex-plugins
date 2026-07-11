@@ -12,17 +12,6 @@
         ]
       }
     ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/warp-cwd-osc7.sh\"",
-            "timeout": 2000
-          }
-        ]
-      }
-    ],
     "WorktreeCreate": [
       {
         "hooks": [
@@ -30,17 +19,6 @@
             "type": "command",
             "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/worktree-create.sh\"",
             "statusMessage": "Preparing new worktree"
-          }
-        ]
-      }
-    ],
-    "WorktreeRemove": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/bin/bash \"${CLAUDE_PLUGIN_ROOT}/hooks/worktree-remove.sh\"",
-            "statusMessage": "Cleaning worktree metadata"
           }
         ]
       }

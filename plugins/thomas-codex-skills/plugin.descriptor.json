@@ -2,20 +2,17 @@
   "schemaVersion": 1,
   "name": "thomas-codex-skills",
   "displayName": "Thomas Codex Skills",
-  "summary": "Personal Codex skills packaged as one marketplace plugin for reviews, debugging, and reviewer selection.",
+  "summary": "Personal Codex skills packaged as one marketplace plugin for code review and reviewer selection.",
   "purpose": "Use this plugin when a fresh Codex install should acquire Thomas's active reusable skills from the marketplace UI.",
   "whenToUse": [
     "Install personal skills from the marketplace UI as plugin-marked skills.",
     "Recover active skills on a new machine from the public codex-plugins repo.",
-    "Use unworktree, review-code, find-reviewer, review-thread-response, or systematic-debugging skills."
+    "Use review-code or find-reviewer."
   ],
   "surfaces": {
     "skills": [
       "find-reviewer",
-      "review-code",
-      "review-thread-response",
-      "systematic-debugging",
-      "unworktree"
+      "review-code"
     ],
     "mcpServers": [],
     "hooks": []
