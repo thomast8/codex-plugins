@@ -18,7 +18,7 @@ relative to this `SKILL.md` in the installed plugin copy.
   This is how the desktop app's bottom bar follows the worktree. The hook handles
   existing-branch checkout, new-branch creation, and reuse of existing worktrees.
 - `post-enter.sh <main_root>` - runs INSIDE the new worktree after `EnterWorktree`. Pulls latest from the remote and copies gitignored dev files from main.
-- `rebind-current-thread.mjs --branch <branch> --source <repo-root> [--thread-id <id>] [--dry-run] [--open-app-fallback]` - probe-first fallback for runtimes without `EnterWorktree`. It prepares or reuses a worktree under Codex's managed worktree area, then tries the supported app-server protocol. It only reports `rebound` when app-server returns the worktree cwd.
+- `rebind-current-thread.mjs ...` is a diagnostic-only legacy helper. Do not use it in the normal workflow: a running or loaded Codex task cannot be moved by the app-server protocol.
 - `execute.sh switch <branch> <main_root> <is_graphite>` - used ONLY for "switch checkout" mode, not for worktree creation.
 
 ## Workflow
@@ -115,37 +115,22 @@ checkout, and session switching. You only have to do three steps:
 
 #### What if EnterWorktree is unavailable or fails?
 
-If `EnterWorktree` is not present in the current tool list, or it errors,
-surface that native session switching is unavailable and run the app-server
-probe helper before using legacy manual discipline:
+Stop before creating a worktree. State that this running task cannot be rebound
+to a different checkout: the desktop app-server deliberately ignores cwd
+overrides for loaded tasks. Ask the user whether they want to open a **new Codex
+task** in a standalone worktree or stay in the current checkout. Do not claim
+that the current task moved, and do not continue implementation by rewriting
+every command and file path to a prepared worktree.
 
-```bash
-<worktree_skill_dir>/scripts/rebind-current-thread.mjs --branch <branch> --source <orig_root> --thread-id "${CODEX_THREAD_ID:-}"
-```
-
-Parse the JSON result and handle it honestly:
-
-- `rebound`: app-server confirmed the thread cwd is the worktree. The helper has already prepared the worktree and copied approved dev files. Relay the result and continue from the worktree.
-- `prepared_only`: the worktree is ready, but app-server did not accept the cwd change. Use the returned `worktreePath` and the "Legacy rebind discipline" section.
-- `unsupported`: no reachable app-server endpoint had this thread loaded, or `CODEX_THREAD_ID` was missing. If `preparation.prepared` is true, use the returned `worktreePath` with legacy discipline.
-- `fallback_opened`: the helper opened Codex Desktop at the prepared worktree because `--open-app-fallback` was explicitly used. This is not a same-thread rebind.
-- `failed`: report the error. If the failure happened before worktree preparation, use `execute.sh worktree` only after telling the user why the probe path failed.
-
-Validated behavior to remember: current local app-server Unix sockets speak
-WebSocket over the Unix socket, not raw JSONL, and `thread/resume.cwd` overrides
-are ignored for already running or loaded threads. So this probe is an honest
-best-effort fallback, not a replacement for native `EnterWorktree`.
-
-If the helper cannot run at all and the user still wants a worktree, use the
-legacy script fallback:
+Only after the user explicitly chooses the standalone-task option may you run:
 
 ```bash
 <worktree_skill_dir>/scripts/execute.sh worktree <branch> <orig_root> <is_graphite>
 ```
 
-The legacy fallback uses plain `git worktree add` without the session switch. The
-desktop bottom bar will not follow, and you must manually set shell cwd plus use
-absolute paths for file edits.
+Relay the resulting path and end the workflow. The user must open or create the
+new task at that path; it is not a same-task rebind. Never use
+`rebind-current-thread.mjs` as a fallback for this workflow.
 
 ### 5. Execute - switch mode
 
@@ -162,23 +147,15 @@ Read the exit code:
 | 12   | Branch not found                     | Report and stop.                                                                                                                                     |
 | 20   | Other failure                        | Surface stderr verbatim and stop.                                                                                                                    |
 
-### 6. Legacy rebind discipline (fallback path only)
+### 6. Standalone-task boundary (fallback path only)
 
 **Skip this section entirely if you used `EnterWorktree` successfully** - the session switch handled everything.
 
-If `rebind-current-thread.mjs` returned anything other than `rebound`, or if you
-had to fall back to `execute.sh worktree`, the session was NOT switched. You need
-to manually keep Codex's attention on the worktree:
-
-1. **Shell**: run subsequent commands with `workdir=<wt_path>`, or issue a single
-   `cd <wt_path>` when using a persistent shell session.
-2. **File operations**: use absolute paths under `<wt_path>/...` for every
-   read, edit, search, or patch operation. Do not rely on shell cwd for tools
-   that take file paths.
-3. **Absolute paths from memory or prior tool results**: any path that starts with the main repo root must be rewritten to start with `<wt_path>`.
-4. **The main repo path is off-limits** unless the user explicitly asks about a different branch.
-
-This is exactly the discipline the legacy manual-worktree flow required, and it's error-prone - that's why `EnterWorktree` + the hook is now the happy path. Use the fallback only when forced.
+When the native tool is unavailable, the fallback creates a separate checkout,
+not a continuation of the active task. Do not inspect, edit, test, or commit in
+that checkout from this task. Give the user its absolute path and ask them to
+open a new Codex task there. This boundary prevents code and status from being
+split across two worktrees.
 
 ## Configuring copied dev files
 
